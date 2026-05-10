@@ -1,0 +1,6 @@
+nbformat
+numpy
+opencv-python
+matplotlib
+pytest
+ruff

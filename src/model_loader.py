@@ -47,14 +47,17 @@ def patch_pillow_for_colab() -> None:
         PIL._util.is_path = lambda f: isinstance(f, (str, bytes, os.PathLike))
 
 
-def load_models(config: CheckpointConfig | None = None, device: str | None = None):
+def load_models(
+    config: CheckpointConfig | None = None,
+    device: str | None = None,
+    load_stable_diffusion: bool = True,
+):
     """Load all models required by the full pipeline."""
 
     patch_pillow_for_colab()
     config = ensure_checkpoints(config)
     device = device or get_device()
 
-    from diffusers import StableDiffusionInpaintPipeline
     from groundingdino.util.inference import load_model as load_dino
     from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
     from simple_lama_inpainting import SimpleLama
@@ -68,11 +71,15 @@ def load_models(config: CheckpointConfig | None = None, device: str | None = Non
         device=device,
     )
 
-    sd_pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        "runwayml/stable-diffusion-inpainting",
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    )
-    sd_pipe.to(device)
+    sd_pipe = None
+    if load_stable_diffusion:
+        from diffusers import StableDiffusionInpaintPipeline
+
+        sd_pipe = StableDiffusionInpaintPipeline.from_pretrained(
+            "runwayml/stable-diffusion-inpainting",
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        )
+        sd_pipe.to(device)
 
     return {
         "device": device,

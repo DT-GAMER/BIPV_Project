@@ -5,6 +5,23 @@ from __future__ import annotations
 import cv2
 
 
+def resize_to_max_side(image, max_side: int | None):
+    """Resize image so its largest side is at most max_side."""
+
+    if max_side is None:
+        return image
+
+    height, width = image.shape[:2]
+    largest_side = max(height, width)
+    if largest_side <= max_side:
+        return image
+
+    scale = max_side / largest_side
+    new_width = int(round(width * scale))
+    new_height = int(round(height * scale))
+    return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+
 def load_image_bgr(path: str):
     """Load an image in OpenCV BGR format."""
 
@@ -14,10 +31,11 @@ def load_image_bgr(path: str):
     return image
 
 
-def load_image_rgb(path: str):
+def load_image_rgb(path: str, max_side: int | None = None):
     """Load an image as RGB for model and matplotlib usage."""
 
-    return cv2.cvtColor(load_image_bgr(path), cv2.COLOR_BGR2RGB)
+    image_rgb = cv2.cvtColor(load_image_bgr(path), cv2.COLOR_BGR2RGB)
+    return resize_to_max_side(image_rgb, max_side)
 
 
 def save_image_rgb(path: str, image_rgb) -> None:

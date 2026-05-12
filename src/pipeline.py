@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import gc
+
 import numpy as np
+import torch
 
 from .area import calculate_real_world_dimensions, calculate_usable_area, estimate_panel_capacity
 from .config import AnalysisConfig
@@ -31,10 +34,10 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
     """
 
     config = config or AnalysisConfig(**kwargs)
-    models = load_models()
+    models = load_models(load_stable_diffusion=config.run_stable_diffusion)
     device = models["device"]
 
-    image_rgb = load_image_rgb(config.image_path)
+    image_rgb = load_image_rgb(config.image_path, max_side=config.max_image_side)
     stages = {}
 
     print("Stage 1/7 - Obstacle and facade detection")
@@ -65,6 +68,11 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         sd_pipe=models["sd_pipe"],
         run_stable_diffusion=config.run_stable_diffusion,
     )
+    if models.get("sd_pipe") is not None:
+        del models["sd_pipe"]
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     if clean_image.shape[:2] != image_rgb.shape[:2]:
         raise ValueError(
             "Obstacle removal changed the image size. This would break metric area calculation."
@@ -72,6 +80,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
     stages["obstacle_removal"] = {
         "obstacle_pixels": int(robust_mask.sum()),
         "image_shape": tuple(clean_image.shape),
+        "stable_diffusion_used": config.run_stable_diffusion,
     }
 
     print("Stage 3/7 - Facade geometry reconstruction and rectification")

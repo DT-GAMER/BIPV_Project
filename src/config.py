@@ -60,3 +60,4 @@ class AnalysisConfig:
     preserve_original_size: bool = True
     min_window_detections: int = 3
     facade_roi_bottom: float = 0.90
+    max_image_side: int | None = 1280

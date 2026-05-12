@@ -61,3 +61,8 @@ class AnalysisConfig:
     min_window_detections: int = 3
     facade_roi_bottom: float = 0.90
     max_image_side: int | None = 1280
+    constrain_obstacles_to_facade: bool = True
+    obstacle_dilate_kernel: int = 9
+    obstacle_dilate_iters: int = 1
+    obstacle_shadow_pad_frac: float = 0.05
+    max_obstacle_mask_fraction: float = 0.22

@@ -47,10 +47,30 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         device,
         facade_roi_bottom=config.facade_roi_bottom,
     )
+    height, width = image_rgb.shape[:2]
+    bx1, by1, bx2, by2, keep_boxes = building_bbox_from_boxes(
+        source_detection.boxes,
+        source_detection.keep_ids,
+        height,
+        width,
+        facade_roi_bottom=config.facade_roi_bottom,
+    )
+    facade_constraint_mask = np.zeros((height, width), dtype=bool)
+    if config.constrain_obstacles_to_facade:
+        pad_x = int(width * 0.02)
+        pad_y = int(height * 0.02)
+        fx1 = max(0, int(bx1) - pad_x)
+        fy1 = max(0, int(by1) - pad_y)
+        fx2 = min(width - 1, int(bx2) + pad_x)
+        fy2 = min(height - 1, int(by2) + pad_y)
+        facade_constraint_mask[fy1:fy2, fx1:fx2] = True
+    else:
+        facade_constraint_mask[:, :] = True
     stages["source_detection"] = {
         "detections": len(source_detection.phrases),
         "architectural": len(source_detection.keep_ids),
         "obstacles": len(source_detection.remove_ids),
+        "source_building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
     }
 
     print("Stage 2/7 - Obstacle segmentation and removal")
@@ -60,7 +80,15 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         source_detection.remove_ids,
         models["predictor"],
     )
-    robust_mask = build_robust_mask(raw_obstacle_mask)
+    raw_obstacle_mask &= facade_constraint_mask
+    robust_mask = build_robust_mask(
+        raw_obstacle_mask,
+        dilate_kernel=config.obstacle_dilate_kernel,
+        dilate_iters=config.obstacle_dilate_iters,
+        shadow_pad_frac=config.obstacle_shadow_pad_frac,
+        max_mask_fraction=config.max_obstacle_mask_fraction,
+    )
+    robust_mask &= facade_constraint_mask
     clean_image = remove_obstacles(
         image_rgb,
         robust_mask,
@@ -79,22 +107,15 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         )
     stages["obstacle_removal"] = {
         "obstacle_pixels": int(robust_mask.sum()),
+        "obstacle_mask_fraction": float(robust_mask.sum() / max(height * width, 1)),
         "image_shape": tuple(clean_image.shape),
         "stable_diffusion_used": config.run_stable_diffusion,
+        "constrained_to_facade": config.constrain_obstacles_to_facade,
     }
 
     print("Stage 3/7 - Facade geometry reconstruction and rectification")
-    height, width = clean_image.shape[:2]
     vertical_lines = get_vertical_lines(clean_image)
     vanishing_point = robust_vanishing_point(vertical_lines)
-    building_bbox = building_bbox_from_boxes(
-        source_detection.boxes,
-        source_detection.keep_ids,
-        height,
-        width,
-        facade_roi_bottom=config.facade_roi_bottom,
-    )
-    bx1, by1, bx2, by2, keep_boxes = building_bbox
     if config.preserve_original_size:
         aligned_facade, transform_matrix, src_corners, rectified_content_mask = (
             rectify_to_original_size(clean_image, vanishing_point, keep_boxes)

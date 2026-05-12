@@ -11,23 +11,46 @@ from .utils import combine_masks, decode_box
 
 def build_robust_mask(
     raw_mask: np.ndarray,
-    dilate_kernel: int = 21,
-    dilate_iters: int = 3,
-    shadow_pad_frac: float = 0.40,
+    dilate_kernel: int = 9,
+    dilate_iters: int = 1,
+    shadow_pad_frac: float = 0.05,
+    max_mask_fraction: float = 0.22,
+    sparse_fill_threshold: float = 0.18,
+    max_hull_bbox_fraction: float = 0.12,
 ) -> np.ndarray:
-    """Expand object masks to include fringes and likely shadows."""
+    """Expand object masks without letting branchy obstacles erase the facade.
+
+    Tree branches often create sparse masks with a very large convex hull. Using
+    that hull directly can turn a thin tree into a building-sized inpaint mask.
+    This function only applies hull filling to compact components and falls
+    back to a smaller raw-mask dilation if the final mask becomes too large.
+    """
 
     uint_mask = (raw_mask * 255).astype(np.uint8)
     height, width = uint_mask.shape
+    image_area = height * width
 
     n_labels, labels = cv2.connectedComponents(uint_mask)
     hull_mask = np.zeros_like(uint_mask)
     for label in range(1, n_labels):
         component = (labels == label).astype(np.uint8) * 255
+        ys, xs = np.where(component > 0)
+        if len(xs) == 0:
+            continue
+
+        bbox_w = xs.max() - xs.min() + 1
+        bbox_h = ys.max() - ys.min() + 1
+        bbox_area = bbox_w * bbox_h
+        fill_ratio = len(xs) / max(bbox_area, 1)
+        bbox_fraction = bbox_area / max(image_area, 1)
+
         contours, _ = cv2.findContours(component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
-            hull = cv2.convexHull(contour)
-            cv2.fillPoly(hull_mask, [hull], 255)
+            if fill_ratio >= sparse_fill_threshold and bbox_fraction <= max_hull_bbox_fraction:
+                hull = cv2.convexHull(contour)
+                cv2.fillPoly(hull_mask, [hull], 255)
+            else:
+                cv2.drawContours(hull_mask, [contour], -1, 255, thickness=cv2.FILLED)
 
     n_labels, labels = cv2.connectedComponents(hull_mask)
     shadow_mask = hull_mask.copy()
@@ -37,11 +60,20 @@ def build_robust_mask(
             continue
         y_min, y_max = int(ys.min()), int(ys.max())
         x_min, x_max = int(xs.min()), int(xs.max())
-        shadow_bottom = min(height - 1, y_max + int((y_max - y_min) * shadow_pad_frac))
-        shadow_mask[y_max:shadow_bottom, x_min:x_max] = 255
+        component_h = y_max - y_min + 1
+        component_w = x_max - x_min + 1
+        component_fraction = (component_h * component_w) / max(image_area, 1)
+        if component_fraction <= max_hull_bbox_fraction:
+            shadow_bottom = min(height - 1, y_max + int(component_h * shadow_pad_frac))
+            shadow_mask[y_max:shadow_bottom, x_min:x_max] = 255
 
     kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
     expanded = cv2.dilate(shadow_mask, kernel, iterations=dilate_iters)
+
+    if expanded.sum() / max(image_area * 255, 1) > max_mask_fraction:
+        fallback_kernel = np.ones((max(3, dilate_kernel // 2), max(3, dilate_kernel // 2)), np.uint8)
+        expanded = cv2.dilate(uint_mask, fallback_kernel, iterations=1)
+
     return expanded.astype(bool)
 
 

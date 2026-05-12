@@ -65,12 +65,23 @@ def calculate_usable_area(
     balcony_mask,
     shadow_mask,
     dimensions,
+    obstacle_mask=None,
+    obstacle_exclusion_dilate_kernel: int = 15,
 ):
     height, width = facade_mask.shape
     usable_mask = facade_mask.copy()
     usable_mask &= ~dilate_mask(window_mask, kernel_size=5, iterations=1)
     usable_mask &= ~dilate_mask(door_mask, kernel_size=5, iterations=1)
     usable_mask &= ~dilate_mask(balcony_mask, kernel_size=7, iterations=1)
+    if obstacle_mask is None:
+        obstacle_exclusion = np.zeros((height, width), dtype=bool)
+    else:
+        obstacle_exclusion = dilate_mask(
+            obstacle_mask,
+            kernel_size=obstacle_exclusion_dilate_kernel,
+            iterations=1,
+        )
+        usable_mask &= ~obstacle_exclusion
 
     usable_no_shadow = usable_mask.copy()
     heavily_shadowed = shadow_mask & facade_mask
@@ -90,11 +101,13 @@ def calculate_usable_area(
         "door_area_m2": door_mask.sum() * px_to_m2,
         "balcony_area_m2": balcony_mask.sum() * px_to_m2,
         "shadow_area_m2": heavily_shadowed.sum() * px_to_m2,
+        "obstacle_exclusion_area_m2": (obstacle_exclusion & facade_mask).sum() * px_to_m2,
         "usable_percentage": 100 * usable_no_shadow.sum() / facade_area_px if facade_area_px > 0 else 0,
         "px_to_m2": px_to_m2,
         "facade_area_px": int(facade_area_px),
         "usable_mask": usable_no_shadow,
         "usable_mask_reduced": usable_reduced,
+        "obstacle_exclusion_mask": obstacle_exclusion & facade_mask,
     }
 
 

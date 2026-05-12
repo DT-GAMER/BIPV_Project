@@ -39,6 +39,7 @@ def prepare_pvsyst_export(
             "door_area_m2": usable_results["door_area_m2"],
             "balcony_area_m2": usable_results["balcony_area_m2"],
             "shadow_area_m2": usable_results["shadow_area_m2"],
+            "obstacle_exclusion_area_m2": usable_results.get("obstacle_exclusion_area_m2", 0),
         },
         "pv_system_estimate": panel_capacity,
         "shadow_analysis": {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 
+import cv2
 import numpy as np
 import torch
 
@@ -181,6 +182,23 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
 
     print("Stage 6/7 - Shadow detection and usable facade area")
     shadow_analysis = run_shadow_analysis(aligned_facade, segmentation["facade_mask"])
+    if transform_matrix is None:
+        obstacle_mask_for_area = robust_mask
+    else:
+        obstacle_mask_for_area = cv2.warpPerspective(
+            robust_mask.astype("uint8"),
+            transform_matrix,
+            (aligned_facade.shape[1], aligned_facade.shape[0]),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        ).astype(bool)
+
+    if config.exclude_obstacle_area_from_usable:
+        obstacle_mask_for_area &= segmentation["facade_mask"]
+    else:
+        obstacle_mask_for_area = None
+
     usable_results = calculate_usable_area(
         segmentation["facade_mask"],
         segmentation["window_mask"],
@@ -188,6 +206,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         segmentation["balcony_mask"],
         shadow_analysis["shadow_mask"],
         dimensions,
+        obstacle_mask=obstacle_mask_for_area,
+        obstacle_exclusion_dilate_kernel=config.obstacle_exclusion_dilate_kernel,
     )
     panel_capacity = estimate_panel_capacity(
         usable_results["usable_area_m2"],
@@ -199,6 +219,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         "facade_area_m2": usable_results["facade_area_m2"],
         "usable_area_m2": usable_results["usable_area_m2"],
         "usable_area_reduced_m2": usable_results["usable_area_reduced_m2"],
+        "obstacle_exclusion_area_m2": usable_results["obstacle_exclusion_area_m2"],
         "px_to_m2": usable_results["px_to_m2"],
     }
 
@@ -225,6 +246,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
             source_detection.phrases,
         ),
         "obstacle_mask": robust_mask,
+        "obstacle_mask_for_area": obstacle_mask_for_area,
         "src_corners": src_corners,
         "segmentation": segmentation,
         "shadow_analysis": shadow_analysis,

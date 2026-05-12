@@ -66,3 +66,5 @@ class AnalysisConfig:
     obstacle_dilate_iters: int = 1
     obstacle_shadow_pad_frac: float = 0.05
     max_obstacle_mask_fraction: float = 0.22
+    exclude_obstacle_area_from_usable: bool = True
+    obstacle_exclusion_dilate_kernel: int = 15

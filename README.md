@@ -9,18 +9,35 @@ utility tests.
 
 ## What It Does
 
-The pipeline:
+The pipeline converts a raw building photo into an engineering surface for BIPV:
 
-1. Loads a facade image from Google Drive or another Colab path.
-2. Detects architectural facade elements and removable obstacles with Grounding DINO.
-3. Segments detected objects with Segment Anything.
-4. Removes obstacles using OpenCV TELEA, LaMa, and optional Stable Diffusion inpainting.
-5. Rectifies the facade perspective while optionally preserving the original image size.
-6. Optionally validates building dimensions using Google Earth measurements.
-7. Segments facade, windows, doors, balconies, and shadows.
-8. Calculates usable facade area for BIPV in square metres from the facade mask.
-9. Estimates panel count and system capacity.
-10. Exports a PVsyst-style JSON file.
+```text
+Facade image
+  -> object detection
+  -> precise segmentation
+  -> obstacle removal
+  -> perspective transformation
+  -> facade alignment
+  -> final BIPV surface segmentation
+  -> shadow analysis
+  -> Google Earth scaling
+  -> energy estimation
+  -> export
+```
+
+Each stage solves one problem:
+
+1. `src/preprocessing.py` loads, resizes, and normalizes the input image.
+2. `src/detection.py` detects facade objects and obstacles with Grounding DINO.
+3. `src/segmentation.py` converts detections into masks with SAM and window fallbacks.
+4. `src/inpainting.py` removes obstacles with TELEA, LaMa, and optional Stable Diffusion.
+5. `src/geometry.py` rectifies camera perspective and aligns the facade plane.
+6. `src/alignment.py` structures floors and window columns.
+7. `src/bipv_segmentation.py` builds the final usable BIPV mask.
+8. `src/shadows.py` estimates shadow coverage.
+9. `src/scaling.py` converts pixels to metres using Google Earth dimensions.
+10. `src/energy.py` estimates panel capacity and annual energy.
+11. `src/export.py` writes JSON/PVsyst-style outputs.
 
 ## Project Structure
 
@@ -32,12 +49,17 @@ BIPV_Project/
     config.py
     image_io.py
     model_loader.py
+    preprocessing.py
     detection.py
+    segmentation.py
     inpainting.py
     geometry.py
-    segmentation.py
+    alignment.py
+    bipv_segmentation.py
     shadows.py
+    scaling.py
     area.py
+    energy.py
     export.py
     pipeline.py
     utils.py
@@ -107,8 +129,10 @@ config = AnalysisConfig(
     output_path=OUTPUT_PATH,
     ge_width_m=GE_WIDTH_M,
     ge_height_m=GE_HEIGHT_M,
+    require_google_earth_dimensions=True,
     preserve_original_size=True,
-    min_window_detections=3,
+    min_window_detections=25,
+    use_cv_window_fallback=True,
 )
 
 result = run_bipv_analysis(config)
@@ -136,8 +160,10 @@ python -m compileall src
 - Area conversion maps the real facade dimensions onto the detected facade mask,
   not the whole image canvas. This avoids false metre-square values when the
   original-size rectified image includes sky, road, or background.
-- The window stage uses Grounding DINO first, then a conservative SAM fallback
-  inside the facade mask if too few windows are detected.
+- For accurate reporting, provide `ge_width_m` and `ge_height_m` from Google
+  Earth/Maps and set `require_google_earth_dimensions=True`.
+- The window stage uses Grounding DINO first, then SAM and CV glass-rectangle
+  fallbacks inside the facade mask to reduce missed windows.
 - Stable Diffusion inpainting can be disabled in `AnalysisConfig`:
 
 ```python

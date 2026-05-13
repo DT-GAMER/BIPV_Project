@@ -181,8 +181,15 @@ def validate_google_earth_dimensions(
     ge_height_m: float | None,
     floor_height_m: float = 3.0,
     facade_mask=None,
+    require_google_earth_dimensions: bool = False,
 ):
     """Return estimated and optionally Google-Earth-validated dimensions."""
+
+    if require_google_earth_dimensions and (ge_width_m is None or ge_height_m is None):
+        raise ValueError(
+            "Google Earth dimensions are required. Set ge_width_m and ge_height_m "
+            "from Google Earth/Maps before running area calculations."
+        )
 
     if len(window_boxes_np) > 0:
         centers_y = np.sort(window_boxes_np[:, 1])
@@ -206,6 +213,7 @@ def validate_google_earth_dimensions(
     if ge_width_m is None or ge_height_m is None:
         return {
             "status": "unvalidated",
+            "source": "floor-count-estimate",
             "num_floors": floors,
             "height_m": estimated_height_m,
             "width_m": estimated_width_m,
@@ -218,6 +226,7 @@ def validate_google_earth_dimensions(
     status = "excellent" if max_error < 5 else "acceptable" if max_error < 10 else "failed"
     return {
         "status": status,
+        "source": "google-earth",
         "num_floors": floors,
         "height_m": ge_height_m,
         "width_m": ge_width_m,

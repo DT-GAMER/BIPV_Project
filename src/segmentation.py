@@ -128,6 +128,68 @@ def _add_sam_window_fallback(
     return fallback_mask, added
 
 
+def _add_cv_window_fallback(
+    aligned_facade,
+    facade_mask,
+    existing_window_mask,
+    door_mask,
+    balcony_mask,
+    min_area_fraction: float = 0.00020,
+    max_area_fraction: float = 0.02000,
+):
+    """Detect glass-like rectangular window candidates missed by DINO/SAM."""
+
+    height, width = facade_mask.shape
+    facade_area = facade_mask.sum()
+    if facade_area == 0:
+        return existing_window_mask, 0
+
+    hsv = cv2.cvtColor(aligned_facade, cv2.COLOR_RGB2HSV)
+    gray = cv2.cvtColor(aligned_facade, cv2.COLOR_RGB2GRAY)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+
+    glass_like = ((saturation < 85) & (value > 80) & (value < 245)) | (gray < 75)
+    glass_like &= facade_mask
+    glass_like &= ~(door_mask | balcony_mask | existing_window_mask)
+
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))
+    cleaned = cv2.morphologyEx(glass_like.astype(np.uint8) * 255, cv2.MORPH_CLOSE, close_kernel)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    fallback_mask = existing_window_mask.copy()
+    added = 0
+
+    for contour in contours:
+        x, y, bbox_w, bbox_h = cv2.boundingRect(contour)
+        bbox_area = bbox_w * bbox_h
+        if bbox_area == 0:
+            continue
+
+        area_fraction = bbox_area / max(facade_area, 1)
+        if not (min_area_fraction <= area_fraction <= max_area_fraction):
+            continue
+
+        aspect = bbox_h / max(bbox_w, 1)
+        if not (0.60 <= aspect <= 7.0):
+            continue
+
+        contour_area = cv2.contourArea(contour)
+        if contour_area / bbox_area < 0.35:
+            continue
+
+        candidate = np.zeros((height, width), dtype=bool)
+        candidate[y : y + bbox_h, x : x + bbox_w] = True
+        if (candidate & facade_mask).sum() / max(candidate.sum(), 1) < 0.90:
+            continue
+
+        fallback_mask |= candidate
+        added += 1
+
+    return fallback_mask, added
+
+
 def segment_facade_components(
     aligned_facade,
     mask_generator,
@@ -137,6 +199,9 @@ def segment_facade_components(
     building_bbox,
     transform_matrix,
     min_window_detections: int = 3,
+    use_cv_window_fallback: bool = True,
+    cv_window_min_area_fraction: float = 0.00020,
+    cv_window_max_area_fraction: float = 0.02000,
 ):
     """Create facade, window, door, and balcony masks."""
 
@@ -229,6 +294,17 @@ def segment_facade_components(
         min_window_detections,
         window_count,
     )
+    cv_windows_added = 0
+    if use_cv_window_fallback:
+        window_mask, cv_windows_added = _add_cv_window_fallback(
+            aligned_facade,
+            facade_mask,
+            window_mask,
+            door_mask,
+            balcony_mask,
+            min_area_fraction=cv_window_min_area_fraction,
+            max_area_fraction=cv_window_max_area_fraction,
+        )
 
     return {
         "facade_mask": facade_mask,
@@ -243,6 +319,7 @@ def segment_facade_components(
         "quality": {
             "dino_window_count": window_count,
             "sam_fallback_windows_added": fallback_windows_added,
+            "cv_fallback_windows_added": cv_windows_added,
             "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
         },
     }

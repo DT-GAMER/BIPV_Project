@@ -50,6 +50,7 @@ class AnalysisConfig:
     output_path: str = "/content/drive/MyDrive/BIPV_images/pvsyst_export.json"
     ge_width_m: float | None = None
     ge_height_m: float | None = None
+    require_google_earth_dimensions: bool = False
     known_floors: int | None = None
     floor_height_m: float = 3.0
     panel_efficiency: float = 0.20
@@ -68,3 +69,6 @@ class AnalysisConfig:
     max_obstacle_mask_fraction: float = 0.22
     exclude_obstacle_area_from_usable: bool = True
     obstacle_exclusion_dilate_kernel: int = 15
+    use_cv_window_fallback: bool = True
+    cv_window_min_area_fraction: float = 0.00020
+    cv_window_max_area_fraction: float = 0.02000

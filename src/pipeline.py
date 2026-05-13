@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import gc
 
-import cv2
 import numpy as np
 import torch
 
-from .area import calculate_real_world_dimensions, calculate_usable_area, estimate_panel_capacity
+from .alignment import align_facade_grid
+from .area import calculate_usable_area
+from .bipv_segmentation import segment_bipv_surface, warp_mask
 from .config import AnalysisConfig
 from .detection import annotate, detect_obstacles_and_architecture
+from .energy import estimate_energy_yield, estimate_panel_capacity
 from .export import prepare_pvsyst_export, save_pvsyst_export
 from .geometry import (
     building_bbox_from_boxes,
@@ -18,11 +20,11 @@ from .geometry import (
     rectify_aspect_preserving,
     rectify_to_original_size,
     robust_vanishing_point,
-    validate_google_earth_dimensions,
 )
-from .image_io import load_image_rgb
 from .inpainting import build_robust_mask, remove_obstacles, segment_obstacles_with_sam
 from .model_loader import load_models
+from .preprocessing import load_and_preprocess_image
+from .scaling import estimate_real_world_scale
 from .segmentation import segment_facade_components
 from .shadows import run_shadow_analysis
 
@@ -38,10 +40,15 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
     models = load_models(load_stable_diffusion=config.run_stable_diffusion)
     device = models["device"]
 
-    image_rgb = load_image_rgb(config.image_path, max_side=config.max_image_side)
+    print("Stage 1/11 - Image acquisition and preprocessing")
+    image_rgb = load_and_preprocess_image(config.image_path, max_side=config.max_image_side)
     stages = {}
+    stages["preprocessing"] = {
+        "image_shape": tuple(image_rgb.shape),
+        "max_image_side": config.max_image_side,
+    }
 
-    print("Stage 1/7 - Obstacle and facade detection")
+    print("Stage 2/11 - Facade object detection")
     source_detection = detect_obstacles_and_architecture(
         image_rgb,
         models["dino_model"],
@@ -74,7 +81,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         "source_building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
     }
 
-    print("Stage 2/7 - Obstacle segmentation and removal")
+    print("Stage 3/11 - Precise obstacle segmentation")
     raw_obstacle_mask = segment_obstacles_with_sam(
         image_rgb,
         source_detection.boxes,
@@ -90,6 +97,12 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         max_mask_fraction=config.max_obstacle_mask_fraction,
     )
     robust_mask &= facade_constraint_mask
+    stages["obstacle_segmentation"] = {
+        "raw_obstacle_pixels": int(raw_obstacle_mask.sum()),
+        "robust_obstacle_pixels": int(robust_mask.sum()),
+    }
+
+    print("Stage 4/11 - Obstacle removal / inpainting")
     clean_image = remove_obstacles(
         image_rgb,
         robust_mask,
@@ -114,7 +127,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         "constrained_to_facade": config.constrain_obstacles_to_facade,
     }
 
-    print("Stage 3/7 - Facade geometry reconstruction and rectification")
+    print("Stage 5/11 - Perspective transformation")
     vertical_lines = get_vertical_lines(clean_image)
     vanishing_point = robust_vanishing_point(vertical_lines)
     if config.preserve_original_size:
@@ -136,7 +149,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         "building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
     }
 
-    print("Stage 4/7 - Facade, window, door, and balcony segmentation")
+    print("Stage 6/11 - Facade alignment and grid structuring")
+    print("Stage 7/11 - Final facade component segmentation")
     segmentation = segment_facade_components(
         aligned_facade,
         models["mask_generator"],
@@ -146,6 +160,9 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         (bx1, by1, bx2, by2),
         transform_matrix,
         min_window_detections=config.min_window_detections,
+        use_cv_window_fallback=config.use_cv_window_fallback,
+        cv_window_min_area_fraction=config.cv_window_min_area_fraction,
+        cv_window_max_area_fraction=config.cv_window_max_area_fraction,
     )
     if rectified_content_mask is not None:
         segmentation["facade_mask"] &= rectified_content_mask
@@ -161,44 +178,44 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
             if "window" in phrase.lower()
         ]
     )
-    print("Stage 5/7 - Google Earth scale validation")
-    validation = validate_google_earth_dimensions(
-        aligned_facade,
-        window_boxes_np,
-        config.ge_width_m,
-        config.ge_height_m,
-        config.floor_height_m,
-        facade_mask=segmentation["facade_mask"],
-    )
-    dimensions = calculate_real_world_dimensions(
-        aligned_facade,
-        window_boxes_np,
-        known_floors=config.known_floors,
-        reference_height_m=config.floor_height_m,
-        validated_width_m=validation["width_m"],
-        validated_height_m=validation["height_m"],
-        facade_mask=segmentation["facade_mask"],
-    )
+    facade_grid = align_facade_grid(window_boxes_np)
+    stages["alignment"] = {
+        "floor_bands": len(facade_grid["floors"]),
+        "window_columns": len(facade_grid["columns"]),
+        "grid": facade_grid,
+    }
 
-    print("Stage 6/7 - Shadow detection and usable facade area")
+    print("Stage 8/11 - Shadow and illumination analysis")
     shadow_analysis = run_shadow_analysis(aligned_facade, segmentation["facade_mask"])
-    if transform_matrix is None:
-        obstacle_mask_for_area = robust_mask
-    else:
-        obstacle_mask_for_area = cv2.warpPerspective(
-            robust_mask.astype("uint8"),
-            transform_matrix,
-            (aligned_facade.shape[1], aligned_facade.shape[0]),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
-        ).astype(bool)
 
+    print("Stage 9/11 - Real-world scaling")
+    dimensions, validation = estimate_real_world_scale(
+        aligned_facade,
+        window_boxes_np,
+        facade_mask=segmentation["facade_mask"],
+        ge_width_m=config.ge_width_m,
+        ge_height_m=config.ge_height_m,
+        require_google_earth_dimensions=config.require_google_earth_dimensions,
+        known_floors=config.known_floors,
+        floor_height_m=config.floor_height_m,
+    )
+
+    print("Stage 10/11 - Usable BIPV surface and energy estimation")
+    obstacle_mask_for_area = warp_mask(robust_mask, transform_matrix, aligned_facade.shape)
     if config.exclude_obstacle_area_from_usable:
         obstacle_mask_for_area &= segmentation["facade_mask"]
     else:
         obstacle_mask_for_area = None
 
+    bipv_surface = segment_bipv_surface(
+        segmentation["facade_mask"],
+        segmentation["window_mask"],
+        segmentation["door_mask"],
+        segmentation["balcony_mask"],
+        shadow_mask=shadow_analysis["shadow_mask"],
+        obstacle_mask=obstacle_mask_for_area,
+        obstacle_exclusion_dilate_kernel=config.obstacle_exclusion_dilate_kernel,
+    )
     usable_results = calculate_usable_area(
         segmentation["facade_mask"],
         segmentation["window_mask"],
@@ -215,6 +232,10 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         panel_area_m2=config.panel_area_m2,
         watts_per_panel=config.watts_per_panel,
     )
+    energy_yield = estimate_energy_yield(
+        panel_capacity["total_capacity_kw"],
+        shading_loss_fraction=shadow_analysis.get("shadow_percentage", 0) / 100,
+    )
     stages["area"] = {
         "facade_area_m2": usable_results["facade_area_m2"],
         "usable_area_m2": usable_results["usable_area_m2"],
@@ -223,7 +244,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         "px_to_m2": usable_results["px_to_m2"],
     }
 
-    print("Stage 7/7 - PVsyst export")
+    print("Stage 11/11 - Final export")
     export_data = prepare_pvsyst_export(
         config.image_path,
         dimensions,
@@ -251,8 +272,11 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         "segmentation": segmentation,
         "shadow_analysis": shadow_analysis,
         "dimensions": dimensions,
+        "facade_grid": facade_grid,
+        "bipv_surface": bipv_surface,
         "usable_results": usable_results,
         "panel_capacity": panel_capacity,
+        "energy_yield": energy_yield,
         "export_data": export_data,
         "stages": stages,
         "output_path": config.output_path,

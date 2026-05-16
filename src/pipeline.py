@@ -199,6 +199,12 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         known_floors=config.known_floors,
         floor_height_m=config.floor_height_m,
     )
+    stages["scaling"] = {
+        "source": dimensions.get("scale_source", validation.get("source")),
+        "method": dimensions.get("scale_method", validation.get("method")),
+        "confidence": dimensions.get("scale_confidence", validation.get("confidence")),
+        "validation": validation,
+    }
 
     print("Stage 10/11 - Usable BIPV surface and energy estimation")
     obstacle_mask_for_area = warp_mask(robust_mask, transform_matrix, aligned_facade.shape)

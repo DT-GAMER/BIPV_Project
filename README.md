@@ -20,7 +20,7 @@ Facade image
   -> facade alignment
   -> final BIPV surface segmentation
   -> shadow analysis
-  -> Google Earth scaling
+  -> automatic or measured scaling
   -> energy estimation
   -> export
 ```
@@ -35,7 +35,7 @@ Each stage solves one problem:
 6. `src/alignment.py` structures floors and window columns.
 7. `src/bipv_segmentation.py` builds the final usable BIPV mask.
 8. `src/shadows.py` estimates shadow coverage.
-9. `src/scaling.py` converts pixels to metres using Google Earth dimensions.
+9. `src/scale_estimation.py` and `src/scaling.py` infer metres automatically, with optional Google Earth validation.
 10. `src/energy.py` estimates panel capacity and annual energy.
 11. `src/export.py` writes JSON/PVsyst-style outputs.
 
@@ -57,6 +57,7 @@ BIPV_Project/
     alignment.py
     bipv_segmentation.py
     shadows.py
+    scale_estimation.py
     scaling.py
     area.py
     energy.py
@@ -102,40 +103,39 @@ For later updates inside Colab:
 
 ## Colab Usage
 
-Open `notebooks/BIPV_Colab_Run.ipynb` in Google Colab and update these values:
+Open `notebooks/BIPV_Colab_Run.ipynb` in Google Colab and update the image path:
 
 ```python
 IMAGE_PATH = "/content/drive/MyDrive/BIPV_images/Build5.jpeg"
 OUTPUT_PATH = "/content/drive/MyDrive/BIPV_images/pvsyst_export.json"
-GE_WIDTH_M = None
-GE_HEIGHT_M = None
 ```
 
-If you measure the building in Google Earth, replace `None` with real values:
+Run automatic upload mode:
 
 ```python
-GE_WIDTH_M = 42.5
-GE_HEIGHT_M = 18.0
+from src.config import automatic_config
+from src.pipeline import run_bipv_analysis
+
+config = automatic_config(
+    image_path=IMAGE_PATH,
+    output_path=OUTPUT_PATH,
+)
+
+result = run_bipv_analysis(config)
 ```
 
-Then run:
+Optional research calibration, if measured dimensions are available:
 
 ```python
 from src.config import AnalysisConfig
-from src.pipeline import run_bipv_analysis
 
 config = AnalysisConfig(
     image_path=IMAGE_PATH,
     output_path=OUTPUT_PATH,
-    ge_width_m=GE_WIDTH_M,
-    ge_height_m=GE_HEIGHT_M,
+    ge_width_m=42.5,
+    ge_height_m=18.0,
     require_google_earth_dimensions=True,
-    preserve_original_size=True,
-    min_window_detections=25,
-    use_cv_window_fallback=True,
 )
-
-result = run_bipv_analysis(config)
 ```
 
 ## Local Development
@@ -160,8 +160,10 @@ python -m compileall src
 - Area conversion maps the real facade dimensions onto the detected facade mask,
   not the whole image canvas. This avoids false metre-square values when the
   original-size rectified image includes sky, road, or background.
-- For accurate reporting, provide `ge_width_m` and `ge_height_m` from Google
-  Earth/Maps and set `require_google_earth_dimensions=True`.
+- With only one uploaded image, absolute metre-square values are estimated from
+  detected floors, facade aspect ratio, window evidence, and architectural priors.
+  This is the no-manual-input operating mode. Measured Google Earth dimensions
+  can still be supplied later as validation labels to report height/width/area error.
 - The window stage uses Grounding DINO first, then SAM and CV glass-rectangle
   fallbacks inside the facade mask to reduce missed windows.
 - Stable Diffusion inpainting can be disabled in `AnalysisConfig`:

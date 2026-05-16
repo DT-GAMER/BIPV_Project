@@ -27,6 +27,9 @@ def prepare_pvsyst_export(
             "height_m": dimensions["height_m"],
             "total_facade_area_m2": dimensions["total_facade_area_m2"],
             "num_floors": dimensions["num_floors"],
+            "scale_source": dimensions.get("scale_source", "measured-or-estimated"),
+            "scale_method": dimensions.get("scale_method", "unknown"),
+            "scale_confidence": dimensions.get("scale_confidence"),
         },
         "usable_area": {
             "facade_area_m2": usable_results["facade_area_m2"],

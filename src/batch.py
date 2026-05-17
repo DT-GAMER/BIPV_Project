@@ -13,8 +13,18 @@ def run_batch_analysis(
     image_paths,
     output_dir: str = "/content/drive/MyDrive/BIPV_outputs",
     base_config: AnalysisConfig | None = None,
+    max_images: int = 10,
 ):
     """Run BIPV analysis for multiple images while reusing loaded models."""
+
+    image_paths = list(image_paths)
+    if len(image_paths) == 0:
+        raise ValueError("No image paths were provided for batch analysis.")
+    if len(image_paths) > max_images:
+        raise ValueError(
+            f"Batch analysis supports at most {max_images} images per run. "
+            f"You provided {len(image_paths)} images. Split them into smaller batches."
+        )
 
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)

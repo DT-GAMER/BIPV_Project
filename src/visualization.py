@@ -104,7 +104,11 @@ def show_workflow_grid(results, column_titles=None, figsize_per_cell=(3.0, 2.2))
             if col == 0:
                 axis.set_ylabel(stage_name, rotation=0, ha="right", va="center", labelpad=55)
             if row == 0:
-                title = column_titles[col] if column_titles else f"Image {col + 1}"
+                title = (
+                    column_titles[col]
+                    if column_titles and col < len(column_titles)
+                    else f"Image {col + 1}"
+                )
                 axis.set_title(title)
 
     plt.tight_layout()

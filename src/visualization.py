@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -79,12 +80,8 @@ def workflow_images_from_result(result):
     ]
 
 
-def show_workflow_grid(results, column_titles=None, figsize_per_cell=(3.0, 2.2)):
-    """Display results like a stage-by-stage workflow figure.
-
-    Rows are stages; columns are analysed images.
-    """
-
+def build_workflow_grid_figure(results, column_titles=None, figsize_per_cell=(3.0, 2.2)):
+    """Build a stage-by-stage workflow figure and return it."""
     if isinstance(results, dict):
         results = [results]
 
@@ -112,7 +109,49 @@ def show_workflow_grid(results, column_titles=None, figsize_per_cell=(3.0, 2.2))
                 axis.set_title(title)
 
     plt.tight_layout()
+    return fig
+
+
+def show_workflow_grid(results, column_titles=None, figsize_per_cell=(3.0, 2.2)):
+    """Display results like a stage-by-stage workflow figure.
+
+    Rows are stages; columns are analysed images.
+    """
+
+    build_workflow_grid_figure(results, column_titles, figsize_per_cell)
     plt.show()
+
+
+def save_workflow_grid_image(
+    results,
+    path: str,
+    column_titles=None,
+    figsize_per_cell=(3.0, 2.2),
+    dpi: int = 300,
+):
+    """Save workflow grid to PNG/JPG.
+
+    JPG is written through OpenCV to avoid occasional Colab/Pillow savefig
+    incompatibilities.
+    """
+
+    fig = build_workflow_grid_figure(results, column_titles, figsize_per_cell)
+    path_lower = path.lower()
+
+    if path_lower.endswith((".jpg", ".jpeg")):
+        fig.canvas.draw()
+        width, height = fig.canvas.get_width_height()
+        image_rgb = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        image_rgb = image_rgb.reshape((height, width, 3))
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        ok = cv2.imwrite(path, image_bgr)
+        if not ok:
+            raise OSError(f"Could not save workflow grid to {path}")
+    else:
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+
+    plt.close(fig)
+    return path
 
 
 def show_bipv_scenario_bars(result, metric: str = "annual_kwh", title: str | None = None):

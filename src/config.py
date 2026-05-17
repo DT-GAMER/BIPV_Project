@@ -61,6 +61,8 @@ class AnalysisConfig:
     panel_efficiency: float = 0.20
     panel_area_m2: float = 1.7
     watts_per_panel: int = 350
+    specific_yield_kwh_per_kwp: float = 950
+    window_pv_correction: float = 0.70
     run_stable_diffusion: bool = False
     visualize: bool = True
     preserve_original_size: bool = True

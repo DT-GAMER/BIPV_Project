@@ -14,6 +14,7 @@ def prepare_pvsyst_export(
     panel_capacity,
     shadow_analysis,
     validation=None,
+    bipv_scenarios=None,
 ):
     return {
         "metadata": {
@@ -45,6 +46,7 @@ def prepare_pvsyst_export(
             "obstacle_exclusion_area_m2": usable_results.get("obstacle_exclusion_area_m2", 0),
         },
         "pv_system_estimate": panel_capacity,
+        "bipv_scenarios": bipv_scenarios or {},
         "shadow_analysis": {
             "shadow_area_px": shadow_analysis.get("shadow_area_px", 0),
             "shadow_percentage": shadow_analysis.get("shadow_percentage", 0),

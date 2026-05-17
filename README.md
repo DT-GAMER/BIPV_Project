@@ -124,6 +124,41 @@ config = automatic_config(
 result = run_bipv_analysis(config)
 ```
 
+Batch mode for two or more images:
+
+```python
+from src.batch import run_batch_analysis
+from src.visualization import show_workflow_grid
+
+image_paths = [
+    "/content/drive/MyDrive/BIPV_images/building_1.jpg",
+    "/content/drive/MyDrive/BIPV_images/building_2.jpg",
+    "/content/drive/MyDrive/BIPV_images/building_3.jpg",
+]
+
+results = run_batch_analysis(image_paths)
+show_workflow_grid(results, column_titles=["Case 1", "Case 2", "Case 3"])
+```
+
+Show the paper-style BIPV scenario comparison:
+
+```python
+from src.visualization import show_bipv_scenario_bars
+
+show_bipv_scenario_bars(result, metric="annual_kwh")
+show_bipv_scenario_bars(result, metric="estimated_kwp")
+```
+
+The workflow grid uses the same five rows as the reference figure:
+
+```text
+Facade Image
+Obstacle Detection
+Obstacle Removal
+Facade Alignment
+Segmentation Result
+```
+
 Optional research calibration, if measured dimensions are available:
 
 ```python
@@ -155,6 +190,8 @@ python -m compileall src
 ## Notes
 
 - The full model stack needs Colab GPU runtime.
+- See `docs/methodology_alignment.md` for how this codebase maps to the
+  referenced facade BIPV methodology and what remains to implement.
 - Model checkpoints are downloaded into `checkpoints/` and are ignored by Git.
 - Input images, generated outputs, and large weights should not be committed.
 - Area conversion maps the real facade dimensions onto the detected facade mask,

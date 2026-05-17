@@ -12,7 +12,7 @@ from .area import calculate_usable_area
 from .bipv_segmentation import segment_bipv_surface, warp_mask
 from .config import AnalysisConfig
 from .detection import annotate, detect_obstacles_and_architecture
-from .energy import estimate_energy_yield, estimate_panel_capacity
+from .energy import estimate_bipv_scenarios, estimate_energy_yield, estimate_panel_capacity
 from .export import prepare_pvsyst_export, save_pvsyst_export
 from .geometry import (
     building_bbox_from_boxes,
@@ -29,7 +29,7 @@ from .segmentation import segment_facade_components
 from .shadows import run_shadow_analysis
 
 
-def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
+def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwargs):
     """Run the full BIPV analysis.
 
     Pass either an ``AnalysisConfig`` or keyword arguments accepted by it.
@@ -37,7 +37,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
     """
 
     config = config or AnalysisConfig(**kwargs)
-    models = load_models(load_stable_diffusion=config.run_stable_diffusion)
+    owns_models = models is None
+    models = models or load_models(load_stable_diffusion=config.run_stable_diffusion)
     device = models["device"]
 
     print("Stage 1/11 - Image acquisition and preprocessing")
@@ -240,7 +241,18 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
     )
     energy_yield = estimate_energy_yield(
         panel_capacity["total_capacity_kw"],
+        specific_yield_kwh_per_kwp=config.specific_yield_kwh_per_kwp,
         shading_loss_fraction=shadow_analysis.get("shadow_percentage", 0) / 100,
+    )
+    bipv_scenarios = estimate_bipv_scenarios(
+        segmentation["facade_mask"],
+        segmentation["window_mask"],
+        shadow_analysis["shadow_mask"],
+        dimensions,
+        panel_area_m2=config.panel_area_m2,
+        watts_per_panel=config.watts_per_panel,
+        specific_yield_kwh_per_kwp=config.specific_yield_kwh_per_kwp,
+        window_pv_correction=config.window_pv_correction,
     )
     stages["area"] = {
         "facade_area_m2": usable_results["facade_area_m2"],
@@ -258,8 +270,14 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         panel_capacity,
         shadow_analysis,
         validation=validation,
+        bipv_scenarios=bipv_scenarios,
     )
     save_pvsyst_export(config.output_path, export_data)
+
+    if owns_models:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     return {
         "image_rgb": image_rgb,
@@ -283,6 +301,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, **kwargs):
         "usable_results": usable_results,
         "panel_capacity": panel_capacity,
         "energy_yield": energy_yield,
+        "bipv_scenarios": bipv_scenarios,
         "export_data": export_data,
         "stages": stages,
         "output_path": config.output_path,

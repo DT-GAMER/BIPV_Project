@@ -65,7 +65,7 @@ class AnalysisConfig:
     window_pv_correction: float = 0.70
     run_stable_diffusion: bool = False
     visualize: bool = True
-    preserve_original_size: bool = True
+    preserve_original_size: bool = True  # Always enforced by the pipeline for metric area safety.
     min_window_detections: int = 25
     facade_roi_bottom: float = 0.90
     max_image_side: int | None = 1024

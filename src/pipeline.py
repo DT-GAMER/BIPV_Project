@@ -16,10 +16,7 @@ from .energy import estimate_bipv_scenarios, estimate_energy_yield, estimate_pan
 from .export import prepare_pvsyst_export, save_pvsyst_export
 from .geometry import (
     building_bbox_from_boxes,
-    get_vertical_lines,
-    rectify_aspect_preserving,
-    rectify_to_original_size,
-    robust_vanishing_point,
+    rectify_facade,
 )
 from .inpainting import build_robust_mask, remove_obstacles, segment_obstacles_with_sam
 from .model_loader import load_models
@@ -128,25 +125,20 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "constrained_to_facade": config.constrain_obstacles_to_facade,
     }
 
-    print("Stage 5/11 - Perspective transformation")
-    vertical_lines = get_vertical_lines(clean_image)
-    vanishing_point = robust_vanishing_point(vertical_lines)
-    if config.preserve_original_size:
-        aligned_facade, transform_matrix, src_corners, rectified_content_mask = (
-            rectify_to_original_size(clean_image, vanishing_point, keep_boxes)
-        )
-    else:
-        aligned_facade, transform_matrix, src_corners = rectify_aspect_preserving(
-            clean_image,
-            vanishing_point,
-            keep_boxes,
-        )
-        rectified_content_mask = None
+    print("Stage 5/11 - Perspective transformation / facade rectification")
+    # Metric area estimates require rectification to keep the original image
+    # canvas and detected building footprint stable.
+    rectification = rectify_facade(
+        clean_image,
+        keep_boxes,
+        preserve_original_size=True,
+    )
+    aligned_facade = rectification.aligned_facade
+    transform_matrix = rectification.transform_matrix
+    src_corners = rectification.source_corners
+    rectified_content_mask = rectification.content_mask
     stages["geometry"] = {
-        "input_shape": tuple(clean_image.shape),
-        "aligned_shape": tuple(aligned_facade.shape),
-        "preserve_original_size": config.preserve_original_size,
-        "vertical_lines": len(vertical_lines),
+        **rectification.quality,
         "building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
     }
 
@@ -293,6 +285,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "obstacle_mask": robust_mask,
         "obstacle_mask_for_area": obstacle_mask_for_area,
         "src_corners": src_corners,
+        "rectification": rectification.quality,
         "segmentation": segmentation,
         "shadow_analysis": shadow_analysis,
         "dimensions": dimensions,

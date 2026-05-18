@@ -16,7 +16,7 @@ Facade image
   -> object detection
   -> precise segmentation
   -> obstacle removal
-  -> perspective transformation
+  -> perspective transformation / facade rectification
   -> facade alignment
   -> final BIPV surface segmentation
   -> shadow analysis
@@ -31,7 +31,7 @@ Each stage solves one problem:
 2. `src/detection.py` detects facade objects and obstacles with Grounding DINO.
 3. `src/segmentation.py` converts detections into masks with SAM and window fallbacks.
 4. `src/inpainting.py` removes obstacles with TELEA, LaMa, and optional Stable Diffusion.
-5. `src/geometry.py` rectifies camera perspective and aligns the facade plane.
+5. `src/geometry.py` rectifies camera perspective by estimating facade boundaries, vertical structure, and a homography transform.
 6. `src/alignment.py` structures floors and window columns.
 7. `src/bipv_segmentation.py` builds the final usable BIPV mask.
 8. `src/shadows.py` estimates shadow coverage.

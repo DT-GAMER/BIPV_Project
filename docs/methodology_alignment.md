@@ -8,7 +8,7 @@ Facade RGB image
   -> Grounding DINO object detection
   -> SAM mask generation
   -> Stable Diffusion / LaMa inpainting
-  -> perspective transformation
+  -> perspective transformation / facade rectification
   -> facade alignment
   -> facade parsing: wall/window/obstacle masks
   -> shadow and irradiance analysis
@@ -26,7 +26,7 @@ The current codebase implements the RGB-image facade parsing branch:
 | SAM mask generation | `src/segmentation.py`, `src/inpainting.py` | implemented |
 | Obstacle mask expansion | `src/inpainting.py` | implemented |
 | Obstacle removal / inpainting | `src/inpainting.py` | implemented with TELEA, LaMa, optional Stable Diffusion |
-| Perspective transformation | `src/geometry.py` | implemented |
+| Perspective transformation / facade rectification | `src/geometry.py` | implemented with boundary detection, vertical-line evidence, vanishing-point fallback, and homography reporting |
 | Facade alignment/grid structuring | `src/alignment.py` | implemented baseline |
 | Window/wall/facade parsing | `src/segmentation.py`, `src/bipv_segmentation.py` | implemented baseline |
 | Real-world scale estimation | `src/scale_estimation.py`, `src/scaling.py` | implemented as automatic estimate |

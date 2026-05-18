@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
 from skimage.feature import canny
 from skimage.transform import probabilistic_hough_line
+
+
+@dataclass(frozen=True)
+class FacadeRectificationResult:
+    """Outputs from the high-level facade rectification stage."""
+
+    aligned_facade: np.ndarray
+    transform_matrix: np.ndarray
+    source_corners: np.ndarray
+    content_mask: np.ndarray | None
+    quality: dict
 
 
 def get_vertical_lines(clean_image, min_length: int = 80, max_angle_from_vertical: int = 15):
@@ -72,9 +85,8 @@ def building_bbox_from_boxes(
     return x_min, y_min, x_max, y_max, keep_boxes
 
 
-def _source_quad_from_keep_boxes(clean_image, vanishing_point, keep_boxes, pad_frac: float):
-    """Build the facade source quadrilateral from architectural detections."""
-
+def _axis_aligned_facade_bbox(clean_image, keep_boxes, pad_frac: float):
+    """Return the original detected facade footprint before perspective edits."""
     height, width = clean_image.shape[:2]
     if not keep_boxes:
         margin = int(min(height, width) * 0.02)
@@ -92,6 +104,18 @@ def _source_quad_from_keep_boxes(clean_image, vanishing_point, keep_boxes, pad_f
         y_min = max(0, min(ys1) - pad_y)
         x_max = min(width - 1, max(xs2) + pad_x)
         y_max = min(height - 1, max(ys2) + pad_y)
+    return x_min, y_min, x_max, y_max
+
+
+def _source_quad_from_keep_boxes(clean_image, vanishing_point, keep_boxes, pad_frac: float):
+    """Build the facade source quadrilateral from architectural detections."""
+
+    height, width = clean_image.shape[:2]
+    x_min, y_min, x_max, y_max = _axis_aligned_facade_bbox(
+        clean_image,
+        keep_boxes,
+        pad_frac,
+    )
 
     src = np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.float32)
 
@@ -144,17 +168,23 @@ def rectify_aspect_preserving(clean_image, vanishing_point, keep_boxes, pad_frac
 def rectify_to_original_size(clean_image, vanishing_point, keep_boxes, pad_frac: float = 0.02):
     """Rectify the facade while preserving the original image canvas size.
 
-    The facade quadrilateral is warped into its own axis-aligned bounding box on
-    an output canvas with the same height and width as the source image. This
-    keeps downstream masks and visual outputs at the original pixel dimensions.
+    The perspective-adjusted facade quadrilateral is warped back into the
+    original detected building footprint on an output canvas with the same
+    height and width as the source image. This keeps downstream masks, visual
+    outputs, and pixel-to-area calculations tied to the original building size.
     """
 
     height, width = clean_image.shape[:2]
     src = _source_quad_from_keep_boxes(clean_image, vanishing_point, keep_boxes, pad_frac)
-    x_min = max(0, int(np.floor(src[:, 0].min())))
-    x_max = min(width - 1, int(np.ceil(src[:, 0].max())))
-    y_min = max(0, int(np.floor(src[:, 1].min())))
-    y_max = min(height - 1, int(np.ceil(src[:, 1].max())))
+    x_min, y_min, x_max, y_max = _axis_aligned_facade_bbox(
+        clean_image,
+        keep_boxes,
+        pad_frac,
+    )
+    x_min = max(0, int(np.floor(x_min)))
+    x_max = min(width - 1, int(np.ceil(x_max)))
+    y_min = max(0, int(np.floor(y_min)))
+    y_max = min(height - 1, int(np.ceil(y_max)))
 
     dst = np.array(
         [[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]],
@@ -172,6 +202,115 @@ def rectify_to_original_size(clean_image, vanishing_point, keep_boxes, pad_frac:
     content_mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillPoly(content_mask, [dst.astype(np.int32)], 1)
     return warped, matrix, src, content_mask.astype(bool)
+
+
+def _edge_angle_degrees(point_a, point_b):
+    dx = float(point_b[0] - point_a[0])
+    dy = float(point_b[1] - point_a[1])
+    return float(np.degrees(np.arctan2(dy, dx)))
+
+
+def _source_corner_quality(src_corners, image_shape, vanishing_point, vertical_line_count):
+    height, width = image_shape[:2]
+    top_angle = _edge_angle_degrees(src_corners[0], src_corners[1])
+    bottom_angle = _edge_angle_degrees(src_corners[3], src_corners[2])
+    left_angle = _edge_angle_degrees(src_corners[0], src_corners[3])
+    right_angle = _edge_angle_degrees(src_corners[1], src_corners[2])
+    facade_width_px = float(max(np.linalg.norm(src_corners[1] - src_corners[0]), 1.0))
+    facade_height_px = float(max(np.linalg.norm(src_corners[3] - src_corners[0]), 1.0))
+
+    if vanishing_point is None:
+        method = "axis-aligned-boundary"
+        status = "fallback"
+    else:
+        method = "vanishing-point-assisted-homography"
+        status = "estimated"
+
+    return {
+        "rectification_applied": True,
+        "boundary_method": "architectural-detection-bbox",
+        "perspective_method": method,
+        "status": status,
+        "vertical_lines": int(vertical_line_count),
+        "vanishing_point": (
+            None
+            if vanishing_point is None
+            else [float(vanishing_point[0]), float(vanishing_point[1])]
+        ),
+        "source_corners": src_corners.astype(float).round(2).tolist(),
+        "source_facade_width_px": facade_width_px,
+        "source_facade_height_px": facade_height_px,
+        "source_facade_fraction": float(
+            (facade_width_px * facade_height_px) / max(width * height, 1)
+        ),
+        "pre_rectification_angles_deg": {
+            "top": top_angle,
+            "bottom": bottom_angle,
+            "left": left_angle,
+            "right": right_angle,
+        },
+    }
+
+
+def rectify_facade(
+    clean_image,
+    keep_boxes,
+    preserve_original_size: bool = True,
+    pad_frac: float = 0.02,
+    min_line_length: int = 80,
+) -> FacadeRectificationResult:
+    """Run the full high-level facade rectification stage.
+
+    This converts an angled facade photo into a more front-facing facade frame:
+    detect vertical structure, estimate a vanishing point when possible, build
+    the facade source boundary, then apply a homography/perspective transform.
+    """
+
+    vertical_lines = get_vertical_lines(clean_image, min_length=min_line_length)
+    vanishing_point = robust_vanishing_point(vertical_lines)
+
+    if preserve_original_size:
+        aligned_facade, transform_matrix, src_corners, content_mask = rectify_to_original_size(
+            clean_image,
+            vanishing_point,
+            keep_boxes,
+            pad_frac=pad_frac,
+        )
+        output_mode = "preserve-original-size"
+    else:
+        aligned_facade, transform_matrix, src_corners = rectify_aspect_preserving(
+            clean_image,
+            vanishing_point,
+            keep_boxes,
+            pad_frac=pad_frac,
+        )
+        content_mask = None
+        output_mode = "aspect-preserving-crop"
+
+    quality = _source_corner_quality(
+        src_corners,
+        clean_image.shape,
+        vanishing_point,
+        len(vertical_lines),
+    )
+    quality.update(
+        {
+            "input_shape": tuple(clean_image.shape),
+            "aligned_shape": tuple(aligned_facade.shape),
+            "output_mode": output_mode,
+            "preserve_original_size": preserve_original_size,
+            "preserve_building_footprint": preserve_original_size,
+            "transform_matrix": transform_matrix.astype(float).round(6).tolist(),
+        }
+    )
+
+    return FacadeRectificationResult(
+        aligned_facade=aligned_facade,
+        transform_matrix=transform_matrix,
+        source_corners=src_corners,
+        content_mask=content_mask,
+        quality=quality,
+    )
 
 
 def validate_google_earth_dimensions(

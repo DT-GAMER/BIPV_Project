@@ -80,7 +80,12 @@ def workflow_images_from_result(result):
     ]
 
 
-def build_workflow_grid_figure(results, column_titles=None, figsize_per_cell=(3.0, 2.2)):
+def build_workflow_grid_figure(
+    results,
+    column_titles=None,
+    figsize_per_cell=(3.0, 2.2),
+    label_each_panel: bool = True,
+):
     """Build a stage-by-stage workflow figure and return it."""
     if isinstance(results, dict):
         results = [results]
@@ -98,6 +103,23 @@ def build_workflow_grid_figure(results, column_titles=None, figsize_per_cell=(3.
             axis = axes[row][col]
             axis.imshow(image)
             axis.axis("off")
+            if label_each_panel:
+                axis.text(
+                    0.02,
+                    0.96,
+                    stage_name,
+                    transform=axis.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=9,
+                    color="white",
+                    bbox={
+                        "facecolor": "black",
+                        "alpha": 0.65,
+                        "edgecolor": "none",
+                        "boxstyle": "round,pad=0.25",
+                    },
+                )
             if col == 0:
                 axis.set_ylabel(stage_name, rotation=0, ha="right", va="center", labelpad=55)
             if row == 0:
@@ -112,13 +134,23 @@ def build_workflow_grid_figure(results, column_titles=None, figsize_per_cell=(3.
     return fig
 
 
-def show_workflow_grid(results, column_titles=None, figsize_per_cell=(3.0, 2.2)):
+def show_workflow_grid(
+    results,
+    column_titles=None,
+    figsize_per_cell=(3.0, 2.2),
+    label_each_panel: bool = True,
+):
     """Display results like a stage-by-stage workflow figure.
 
     Rows are stages; columns are analysed images.
     """
 
-    build_workflow_grid_figure(results, column_titles, figsize_per_cell)
+    build_workflow_grid_figure(
+        results,
+        column_titles,
+        figsize_per_cell,
+        label_each_panel=label_each_panel,
+    )
     plt.show()
 
 
@@ -128,6 +160,7 @@ def save_workflow_grid_image(
     column_titles=None,
     figsize_per_cell=(3.0, 2.2),
     dpi: int = 300,
+    label_each_panel: bool = True,
 ):
     """Save workflow grid to PNG/JPG.
 
@@ -135,7 +168,12 @@ def save_workflow_grid_image(
     incompatibilities.
     """
 
-    fig = build_workflow_grid_figure(results, column_titles, figsize_per_cell)
+    fig = build_workflow_grid_figure(
+        results,
+        column_titles,
+        figsize_per_cell,
+        label_each_panel=label_each_panel,
+    )
     path_lower = path.lower()
 
     if path_lower.endswith((".jpg", ".jpeg")):

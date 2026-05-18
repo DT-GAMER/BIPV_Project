@@ -11,6 +11,7 @@ def estimate_real_world_scale(
     aligned_facade,
     window_boxes_np,
     facade_mask,
+    window_mask=None,
     ge_width_m: float | None = None,
     ge_height_m: float | None = None,
     require_google_earth_dimensions: bool = False,
@@ -29,6 +30,7 @@ def estimate_real_world_scale(
             aligned_facade,
             facade_mask,
             window_boxes_np,
+            window_mask=window_mask,
             known_floors=known_floors,
             default_floor_height_m=floor_height_m,
         )
@@ -42,6 +44,8 @@ def estimate_real_world_scale(
             "scale_source": scale_estimate["source"],
             "scale_confidence": scale_estimate["confidence"],
             "scale_method": scale_estimate["method"],
+            "floor_count_source": scale_estimate["floor_count_source"],
+            "floor_count_candidates": scale_estimate["floor_count_candidates"],
         }
         return dimensions, validation
 

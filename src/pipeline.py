@@ -186,6 +186,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         aligned_facade,
         window_boxes_np,
         facade_mask=segmentation["facade_mask"],
+        window_mask=segmentation["window_mask"],
         ge_width_m=config.ge_width_m,
         ge_height_m=config.ge_height_m,
         require_google_earth_dimensions=config.require_google_earth_dimensions,
@@ -196,6 +197,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "source": dimensions.get("scale_source", validation.get("source")),
         "method": dimensions.get("scale_method", validation.get("method")),
         "confidence": dimensions.get("scale_confidence", validation.get("confidence")),
+        "floor_count_source": dimensions.get("floor_count_source"),
+        "floor_count_candidates": dimensions.get("floor_count_candidates"),
         "validation": validation,
     }
 

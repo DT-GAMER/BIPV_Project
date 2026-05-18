@@ -9,16 +9,139 @@ only as validation/calibration references.
 from __future__ import annotations
 
 import numpy as np
+import cv2
 
 from .area import count_floors_from_windows, mask_extent
 
 
-def _count_floors(window_boxes_np, known_floors: int | None) -> int:
+def _count_floor_bands_from_centers(centers_y, min_floor_gap: float) -> int:
+    centers_y = np.sort(np.asarray(centers_y, dtype=float))
+    if len(centers_y) < 2:
+        return len(centers_y) if len(centers_y) > 0 else 0
+    bands = [[centers_y[0]]]
+    for center_y in centers_y[1:]:
+        if center_y - np.mean(bands[-1]) > min_floor_gap:
+            bands.append([])
+        bands[-1].append(center_y)
+    return len(bands)
+
+
+def _floor_band_centers(centers_y, min_floor_gap: float) -> list[float]:
+    centers_y = np.sort(np.asarray(centers_y, dtype=float))
+    if len(centers_y) == 0:
+        return []
+    bands = [[centers_y[0]]]
+    for center_y in centers_y[1:]:
+        if center_y - np.mean(bands[-1]) > min_floor_gap:
+            bands.append([])
+        bands[-1].append(center_y)
+    return [float(np.mean(band)) for band in bands]
+
+
+def _facade_y_extent_norm(facade_mask) -> tuple[float, float] | None:
+    if facade_mask is None or facade_mask.sum() == 0:
+        return None
+    height = facade_mask.shape[0]
+    ys = np.where(facade_mask)[0]
+    return float(ys.min() / height), float(ys.max() / height)
+
+
+def _extrapolate_floors_from_facade_height(
+    band_centers: list[float],
+    facade_mask,
+) -> int:
+    """Infer missing top/ground bands from facade height and row spacing."""
+
+    if len(band_centers) < 2:
+        return len(band_centers)
+
+    facade_extent = _facade_y_extent_norm(facade_mask)
+    if facade_extent is None:
+        return len(band_centers)
+
+    y_min, y_max = facade_extent
+    row_gap = float(np.median(np.diff(np.sort(band_centers))))
+    if row_gap <= 0:
+        return len(band_centers)
+
+    top_margin = max(0.0, band_centers[0] - y_min)
+    bottom_margin = max(0.0, y_max - band_centers[-1])
+    extrapolated = len(band_centers)
+    if top_margin > 0.75 * row_gap:
+        extrapolated += 1
+    if bottom_margin > 0.75 * row_gap:
+        extrapolated += 1
+    return int(np.clip(extrapolated, len(band_centers), 20))
+
+
+def _window_boxes_from_mask(window_mask, facade_mask) -> np.ndarray:
+    """Approximate window boxes from the final segmented window mask."""
+
+    if window_mask is None or window_mask.sum() == 0:
+        return np.empty((0, 4), dtype=float)
+
+    height, width = window_mask.shape
+    facade_area = int(facade_mask.sum()) if facade_mask is not None else height * width
+    min_area = max(20, int(facade_area * 0.00008))
+    max_area = max(min_area + 1, int(facade_area * 0.040))
+
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+        window_mask.astype(np.uint8),
+        connectivity=8,
+    )
+
+    boxes = []
+    for label in range(1, num_labels):
+        x, y, component_width, component_height, area = stats[label]
+        if not (min_area <= area <= max_area):
+            continue
+        if component_width < 3 or component_height < 6:
+            continue
+        if component_width / max(component_height, 1) > 8:
+            continue
+        cx, cy = centroids[label]
+        boxes.append(
+            [
+                float(cx / width),
+                float(cy / height),
+                float(component_width / width),
+                float(component_height / height),
+            ]
+        )
+    return np.array(boxes, dtype=float)
+
+
+def _count_floors(
+    window_boxes_np,
+    known_floors: int | None,
+    window_mask=None,
+    facade_mask=None,
+) -> tuple[int, str, dict]:
     if known_floors is not None:
-        return int(known_floors)
+        return int(known_floors), "manual-known-floor-count", {"manual": int(known_floors)}
+
+    candidates = {}
     if len(window_boxes_np) > 0:
-        return count_floors_from_windows(window_boxes_np)
-    return 5
+        candidates["dino_window_boxes"] = count_floors_from_windows(window_boxes_np)
+
+    mask_boxes = _window_boxes_from_mask(window_mask, facade_mask)
+    if len(mask_boxes) > 0:
+        median_h = float(np.median(mask_boxes[:, 3]))
+        adaptive_gap = float(np.clip(median_h * 1.35, 0.035, 0.085))
+        mask_floor_bands = _floor_band_centers(mask_boxes[:, 1], adaptive_gap)
+        candidates["segmented_window_mask"] = len(mask_floor_bands)
+        candidates["segmented_window_mask_with_facade_extent"] = (
+            _extrapolate_floors_from_facade_height(
+                mask_floor_bands,
+                facade_mask,
+            )
+        )
+
+    if not candidates:
+        return 5, "default-floor-count", {"default": 5}
+
+    source, floors = max(candidates.items(), key=lambda item: item[1])
+    return int(np.clip(floors, 2, 20)), source, candidates
 
 
 def _estimate_floor_height_m(window_boxes_np, default_floor_height_m: float) -> tuple[float, str]:
@@ -42,6 +165,7 @@ def estimate_scale_from_image(
     aligned_facade,
     facade_mask,
     window_boxes_np,
+    window_mask=None,
     known_floors: int | None = None,
     default_floor_height_m: float = 3.0,
 ) -> dict:
@@ -52,7 +176,12 @@ def estimate_scale_from_image(
     """
 
     facade_height_px, facade_width_px = mask_extent(facade_mask)
-    num_floors = _count_floors(window_boxes_np, known_floors)
+    num_floors, floor_count_source, floor_count_candidates = _count_floors(
+        window_boxes_np,
+        known_floors,
+        window_mask=window_mask,
+        facade_mask=facade_mask,
+    )
     floor_height_m, floor_height_source = _estimate_floor_height_m(
         window_boxes_np,
         default_floor_height_m,
@@ -67,6 +196,9 @@ def estimate_scale_from_image(
     if known_floors is not None:
         confidence += 0.25
         evidence.append("manual-known-floor-count")
+    elif floor_count_source.startswith("segmented_window_mask"):
+        confidence += 0.25
+        evidence.append("segmented-window-mask-floor-count")
     elif len(window_boxes_np) >= 8:
         confidence += 0.20
         evidence.append("detected-window-floor-count")
@@ -88,6 +220,8 @@ def estimate_scale_from_image(
         "confidence": confidence,
         "evidence": evidence,
         "num_floors": num_floors,
+        "floor_count_source": floor_count_source,
+        "floor_count_candidates": floor_count_candidates,
         "floor_height_m": floor_height_m,
         "floor_height_source": floor_height_source,
         "height_m": height_m,

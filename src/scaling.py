@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from .area import calculate_real_world_dimensions
-from .geometry import validate_google_earth_dimensions
+from .area import mask_extent
 from .scale_estimation import estimate_scale_from_image, validate_scale_estimate
 
 
@@ -49,22 +48,48 @@ def estimate_real_world_scale(
         }
         return dimensions, validation
 
-    validation = validate_google_earth_dimensions(
+    if ge_width_m is None or ge_height_m is None:
+        raise ValueError(
+            "Google Earth dimensions are required. Set ge_width_m and ge_height_m "
+            "before running calibrated area calculations."
+        )
+
+    image_scale_estimate = estimate_scale_from_image(
         aligned_facade,
+        facade_mask,
         window_boxes_np,
-        ge_width_m,
-        ge_height_m,
-        floor_height_m,
-        facade_mask=facade_mask,
-        require_google_earth_dimensions=require_google_earth_dimensions,
-    )
-    dimensions = calculate_real_world_dimensions(
-        aligned_facade,
-        window_boxes_np,
+        window_mask=window_mask,
         known_floors=known_floors,
-        reference_height_m=floor_height_m,
-        validated_width_m=validation["width_m"],
-        validated_height_m=validation["height_m"],
-        facade_mask=facade_mask,
+        default_floor_height_m=floor_height_m,
     )
+    validation = validate_scale_estimate(image_scale_estimate, ge_width_m, ge_height_m)
+    validation.update(
+        {
+            "source": "google-earth",
+            "calibration_source": "google-earth",
+            "image_estimate_source": image_scale_estimate["source"],
+            "image_estimate_height_m": image_scale_estimate["height_m"],
+            "image_estimate_width_m": image_scale_estimate["width_m"],
+            "image_estimate_area_m2": image_scale_estimate["total_facade_area_m2"],
+            "reference_width_m": ge_width_m,
+            "reference_height_m": ge_height_m,
+            "floor_count_source": image_scale_estimate["floor_count_source"],
+            "floor_count_candidates": image_scale_estimate["floor_count_candidates"],
+        }
+    )
+
+    facade_height_px, _ = mask_extent(facade_mask)
+    pixels_per_meter = facade_height_px / ge_height_m if ge_height_m else 0
+    dimensions = {
+        "num_floors": image_scale_estimate["num_floors"],
+        "height_m": ge_height_m,
+        "width_m": ge_width_m,
+        "pixels_per_meter": pixels_per_meter,
+        "total_facade_area_m2": ge_height_m * ge_width_m,
+        "scale_source": "google-earth",
+        "scale_confidence": validation.get("confidence"),
+        "scale_method": "google-earth-calibrated-image-scale",
+        "floor_count_source": image_scale_estimate["floor_count_source"],
+        "floor_count_candidates": image_scale_estimate["floor_count_candidates"],
+    }
     return dimensions, validation

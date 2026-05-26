@@ -190,6 +190,128 @@ def _add_cv_window_fallback(
     return fallback_mask, added
 
 
+def _component_boxes_from_mask(mask, facade_mask):
+    height, width = mask.shape
+    facade_area = int(facade_mask.sum())
+    if facade_area == 0 or mask.sum() == 0:
+        return []
+
+    min_area = max(20, int(facade_area * 0.00008))
+    max_area = max(min_area + 1, int(facade_area * 0.035))
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8),
+        connectivity=8,
+    )
+
+    boxes = []
+    for label in range(1, num_labels):
+        x, y, box_w, box_h, area = stats[label]
+        if not (min_area <= area <= max_area):
+            continue
+        if box_w < 4 or box_h < 6:
+            continue
+        aspect = box_h / max(box_w, 1)
+        if not (0.35 <= aspect <= 5.5):
+            continue
+        cx, cy = centroids[label]
+        boxes.append(
+            {
+                "x": int(x),
+                "y": int(y),
+                "w": int(box_w),
+                "h": int(box_h),
+                "cx": float(cx),
+                "cy": float(cy),
+            }
+        )
+    return boxes
+
+
+def _cluster_positions(values, tolerance):
+    values = sorted(float(value) for value in values)
+    if not values:
+        return []
+
+    clusters = [[values[0]]]
+    for value in values[1:]:
+        if abs(value - np.mean(clusters[-1])) <= tolerance:
+            clusters[-1].append(value)
+        else:
+            clusters.append([value])
+    return [float(np.mean(cluster)) for cluster in clusters]
+
+
+def _add_grid_inferred_windows(
+    existing_window_mask,
+    facade_mask,
+    door_mask,
+    balcony_mask,
+    reconstructed_mask=None,
+):
+    """Infer windows hidden by removed obstacles from regular facade structure."""
+
+    if reconstructed_mask is None or reconstructed_mask.sum() == 0:
+        return existing_window_mask, 0
+
+    boxes = _component_boxes_from_mask(existing_window_mask, facade_mask)
+    if len(boxes) < 6:
+        return existing_window_mask, 0
+
+    median_w = float(np.median([box["w"] for box in boxes]))
+    median_h = float(np.median([box["h"] for box in boxes]))
+    if median_w <= 0 or median_h <= 0:
+        return existing_window_mask, 0
+
+    x_centers = _cluster_positions(
+        [box["cx"] for box in boxes],
+        tolerance=max(8.0, median_w * 0.70),
+    )
+    y_centers = _cluster_positions(
+        [box["cy"] for box in boxes],
+        tolerance=max(8.0, median_h * 0.85),
+    )
+    if len(x_centers) < 2 or len(y_centers) < 2:
+        return existing_window_mask, 0
+
+    height, width = existing_window_mask.shape
+    inferred = existing_window_mask.copy()
+    occupied = existing_window_mask | door_mask | balcony_mask
+    added = 0
+
+    candidate_w = int(max(4, round(median_w)))
+    candidate_h = int(max(6, round(median_h)))
+
+    for cy in y_centers:
+        for cx in x_centers:
+            x1 = int(round(cx - candidate_w / 2))
+            y1 = int(round(cy - candidate_h / 2))
+            x2 = int(round(cx + candidate_w / 2))
+            y2 = int(round(cy + candidate_h / 2))
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(width, x2), min(height, y2)
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            candidate = np.zeros((height, width), dtype=bool)
+            candidate[y1:y2, x1:x2] = True
+            candidate_area = int(candidate.sum())
+            if candidate_area == 0:
+                continue
+
+            if (candidate & facade_mask).sum() / candidate_area < 0.70:
+                continue
+            if (candidate & occupied).sum() / candidate_area > 0.20:
+                continue
+            if (candidate & reconstructed_mask).sum() / candidate_area < 0.15:
+                continue
+
+            inferred |= candidate
+            occupied |= candidate
+            added += 1
+
+    return inferred, added
+
+
 def segment_facade_components(
     aligned_facade,
     mask_generator,
@@ -202,6 +324,7 @@ def segment_facade_components(
     use_cv_window_fallback: bool = True,
     cv_window_min_area_fraction: float = 0.00020,
     cv_window_max_area_fraction: float = 0.02000,
+    reconstructed_mask=None,
 ):
     """Create facade, window, door, and balcony masks."""
 
@@ -305,6 +428,13 @@ def segment_facade_components(
             min_area_fraction=cv_window_min_area_fraction,
             max_area_fraction=cv_window_max_area_fraction,
         )
+    window_mask, grid_inferred_windows_added = _add_grid_inferred_windows(
+        window_mask,
+        facade_mask,
+        door_mask,
+        balcony_mask,
+        reconstructed_mask=reconstructed_mask,
+    )
 
     return {
         "facade_mask": facade_mask,
@@ -320,6 +450,7 @@ def segment_facade_components(
             "dino_window_count": window_count,
             "sam_fallback_windows_added": fallback_windows_added,
             "cv_fallback_windows_added": cv_windows_added,
+            "grid_inferred_windows_added": grid_inferred_windows_added,
             "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
         },
     }

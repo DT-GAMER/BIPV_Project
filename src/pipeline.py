@@ -158,6 +158,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         **rectification.quality,
         "building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
     }
+    reconstructed_mask = warp_mask(robust_mask, transform_matrix, aligned_facade.shape)
 
     print("Stage 7/8 - Facade element segmentation and alignment")
     segmentation = segment_facade_components(
@@ -172,6 +173,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         use_cv_window_fallback=config.use_cv_window_fallback,
         cv_window_min_area_fraction=config.cv_window_min_area_fraction,
         cv_window_max_area_fraction=config.cv_window_max_area_fraction,
+        reconstructed_mask=reconstructed_mask,
     )
     if rectified_content_mask is not None:
         segmentation["facade_mask"] &= rectified_content_mask
@@ -221,7 +223,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "validation": validation,
     }
 
-    obstacle_mask_for_area = warp_mask(robust_mask, transform_matrix, aligned_facade.shape)
+    obstacle_mask_for_area = reconstructed_mask
     if config.exclude_obstacle_area_from_usable:
         obstacle_mask_for_area &= segmentation["facade_mask"]
     else:

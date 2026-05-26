@@ -12,8 +12,13 @@ from .area import calculate_usable_area
 from .bipv_segmentation import segment_bipv_surface, warp_mask
 from .config import AnalysisConfig
 from .detection import annotate, detect_obstacles_and_architecture
-from .energy import estimate_bipv_scenarios, estimate_energy_yield, estimate_panel_capacity
-from .export import prepare_pvsyst_export, save_pvsyst_export
+from .energy import estimate_energy_yield, estimate_panel_capacity
+from .export import (
+    excel_path_from_json_path,
+    prepare_pvsyst_export,
+    save_pvsyst_excel,
+    save_pvsyst_export,
+)
 from .geometry import (
     building_bbox_from_boxes,
     rectify_facade,
@@ -23,7 +28,18 @@ from .model_loader import load_models
 from .preprocessing import load_and_preprocess_image
 from .scaling import estimate_real_world_scale
 from .segmentation import segment_facade_components
-from .shadows import run_shadow_analysis
+
+
+def _disabled_shadow_analysis(facade_mask):
+    """Return a neutral shadow result while shadow analysis is out of scope."""
+
+    shadow_mask = np.zeros_like(facade_mask, dtype=bool)
+    return {
+        "shadow_area_px": 0,
+        "shadow_percentage": 0.0,
+        "shadow_mask": shadow_mask,
+        "status": "disabled",
+    }
 
 
 def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwargs):
@@ -38,7 +54,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     models = models or load_models(load_stable_diffusion=config.run_stable_diffusion)
     device = models["device"]
 
-    print("Stage 1/11 - Image acquisition and preprocessing")
+    print("Stage 1/8 - Image acquisition and preprocessing")
     image_rgb = load_and_preprocess_image(config.image_path, max_side=config.max_image_side)
     stages = {}
     stages["preprocessing"] = {
@@ -46,7 +62,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "max_image_side": config.max_image_side,
     }
 
-    print("Stage 2/11 - Facade object detection")
+    print("Stage 2/8 - Facade object detection")
     source_detection = detect_obstacles_and_architecture(
         image_rgb,
         models["dino_model"],
@@ -79,7 +95,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "source_building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
     }
 
-    print("Stage 3/11 - Precise obstacle segmentation")
+    print("Stage 3/8 - Image segmentation")
     raw_obstacle_mask = segment_obstacles_with_sam(
         image_rgb,
         source_detection.boxes,
@@ -87,6 +103,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         models["predictor"],
     )
     raw_obstacle_mask &= facade_constraint_mask
+    print("Stage 4/8 - Obstacle masking")
     robust_mask = build_robust_mask(
         raw_obstacle_mask,
         dilate_kernel=config.obstacle_dilate_kernel,
@@ -100,7 +117,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "robust_obstacle_pixels": int(robust_mask.sum()),
     }
 
-    print("Stage 4/11 - Obstacle removal / inpainting")
+    print("Stage 5/8 - Obstacle removal / inpainting")
     clean_image = remove_obstacles(
         image_rgb,
         robust_mask,
@@ -125,7 +142,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "constrained_to_facade": config.constrain_obstacles_to_facade,
     }
 
-    print("Stage 5/11 - Perspective transformation / facade rectification")
+    print("Stage 6/8 - Facade rectification")
     # Metric area estimates require rectification to keep the original image
     # canvas and detected building footprint stable.
     rectification = rectify_facade(
@@ -142,8 +159,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
     }
 
-    print("Stage 6/11 - Facade alignment and grid structuring")
-    print("Stage 7/11 - Final facade component segmentation")
+    print("Stage 7/8 - Facade element segmentation and alignment")
     segmentation = segment_facade_components(
         aligned_facade,
         models["mask_generator"],
@@ -178,10 +194,13 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "grid": facade_grid,
     }
 
-    print("Stage 8/11 - Shadow and illumination analysis")
-    shadow_analysis = run_shadow_analysis(aligned_facade, segmentation["facade_mask"])
+    shadow_analysis = _disabled_shadow_analysis(segmentation["facade_mask"])
+    stages["shadow_analysis"] = {
+        "status": "disabled",
+        "reason": "Current methodology focus excludes shadow and illumination analysis.",
+    }
 
-    print("Stage 9/11 - Real-world scaling")
+    print("Stage 8/8 - Usable BIPV area estimation")
     dimensions, validation = estimate_real_world_scale(
         aligned_facade,
         window_boxes_np,
@@ -202,7 +221,6 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "validation": validation,
     }
 
-    print("Stage 10/11 - Usable BIPV surface and energy estimation")
     obstacle_mask_for_area = warp_mask(robust_mask, transform_matrix, aligned_facade.shape)
     if config.exclude_obstacle_area_from_usable:
         obstacle_mask_for_area &= segmentation["facade_mask"]
@@ -239,16 +257,10 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         specific_yield_kwh_per_kwp=config.specific_yield_kwh_per_kwp,
         shading_loss_fraction=shadow_analysis.get("shadow_percentage", 0) / 100,
     )
-    bipv_scenarios = estimate_bipv_scenarios(
-        segmentation["facade_mask"],
-        segmentation["window_mask"],
-        shadow_analysis["shadow_mask"],
-        dimensions,
-        panel_area_m2=config.panel_area_m2,
-        watts_per_panel=config.watts_per_panel,
-        specific_yield_kwh_per_kwp=config.specific_yield_kwh_per_kwp,
-        window_pv_correction=config.window_pv_correction,
-    )
+    bipv_scenarios = {
+        "status": "disabled",
+        "reason": "Shadow and illumination scenario analysis is out of scope for the current methodology focus.",
+    }
     stages["area"] = {
         "facade_area_m2": usable_results["facade_area_m2"],
         "usable_area_m2": usable_results["usable_area_m2"],
@@ -257,17 +269,19 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "px_to_m2": usable_results["px_to_m2"],
     }
 
-    print("Stage 11/11 - Final export")
     export_data = prepare_pvsyst_export(
         config.image_path,
         dimensions,
         usable_results,
         panel_capacity,
         shadow_analysis,
+        energy_yield=energy_yield,
         validation=validation,
         bipv_scenarios=bipv_scenarios,
     )
     save_pvsyst_export(config.output_path, export_data)
+    excel_output_path = excel_path_from_json_path(config.output_path)
+    save_pvsyst_excel(excel_output_path, export_data)
 
     if owns_models:
         gc.collect()
@@ -301,4 +315,5 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "export_data": export_data,
         "stages": stages,
         "output_path": config.output_path,
+        "excel_output_path": excel_output_path,
     }

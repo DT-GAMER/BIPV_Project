@@ -1,7 +1,13 @@
-# BIPV Facade Analysis Pipeline
+# An Image-Based Pipeline for BIPV Facade Area Estimation
 
-This project turns a Google Colab notebook experiment into a structured Python
-codebase for analysing building facades for BIPV installation potential.
+An image-based pipeline for BIPV facade area estimation, converting street-level
+facade images into PVsyst-ready data.
+
+This work develops an image-based pipeline for estimating usable BIPV facade
+area from street-level building images. The pipeline integrates object
+detection, segmentation, obstacle masking and removal, facade rectification,
+facade element segmentation, and real-world area estimation to generate
+PVsyst-ready structured outputs in JSON and Excel format.
 
 The full pipeline is designed to run on **Google Colab with GPU**. Local
 development in VS Code is for editing, linting, documentation, Git, and small
@@ -14,15 +20,13 @@ The pipeline converts a raw building photo into an engineering surface for BIPV:
 ```text
 Facade image
   -> object detection
-  -> precise segmentation
+  -> image segmentation
+  -> obstacle masking
   -> obstacle removal
   -> perspective transformation / facade rectification
-  -> facade alignment
-  -> final BIPV surface segmentation
-  -> shadow analysis
-  -> automatic or measured scaling
-  -> energy estimation
-  -> export
+  -> facade element segmentation
+  -> usable BIPV area estimation
+  -> JSON and Excel export
 ```
 
 Each stage solves one problem:
@@ -30,14 +34,14 @@ Each stage solves one problem:
 1. `src/preprocessing.py` loads, resizes, and normalizes the input image.
 2. `src/detection.py` detects facade objects and obstacles with Grounding DINO.
 3. `src/segmentation.py` converts detections into masks with SAM and window fallbacks.
-4. `src/inpainting.py` removes obstacles with TELEA, LaMa, and optional Stable Diffusion.
-5. `src/geometry.py` rectifies camera perspective by estimating facade boundaries, vertical structure, and a homography transform.
-6. `src/alignment.py` structures floors and window columns.
-7. `src/bipv_segmentation.py` builds the final usable BIPV mask.
-8. `src/shadows.py` estimates shadow coverage.
-9. `src/scale_estimation.py` and `src/scaling.py` infer metres automatically, with optional Google Earth validation.
-10. `src/energy.py` estimates panel capacity and annual energy.
-11. `src/export.py` writes JSON/PVsyst-style outputs.
+4. `src/inpainting.py` expands obstacle masks for removal.
+5. `src/inpainting.py` removes obstacles with TELEA, LaMa, and optional Stable Diffusion.
+6. `src/geometry.py` rectifies camera perspective by estimating facade boundaries, vertical structure, and a homography transform.
+7. `src/segmentation.py` and `src/alignment.py` segment facade elements and structure floors/window columns.
+8. `src/bipv_segmentation.py`, `src/scale_estimation.py`, and `src/area.py` estimate usable BIPV facade area.
+
+Shadow and illumination analysis is currently disabled so development can focus
+on the image-based facade parsing and usable-area stages.
 
 ## Project Structure
 
@@ -122,6 +126,9 @@ config = automatic_config(
 )
 
 result = run_bipv_analysis(config)
+
+print(result["output_path"])        # structured JSON
+print(result["excel_output_path"])  # PVsyst-ready Excel workbook
 ```
 
 Batch mode for two or more images:
@@ -140,15 +147,6 @@ results = run_batch_analysis(image_paths)
 show_workflow_grid(results, column_titles=["Case 1", "Case 2", "Case 3"])
 ```
 
-Show the paper-style BIPV scenario comparison:
-
-```python
-from src.visualization import show_bipv_scenario_bars
-
-show_bipv_scenario_bars(result, metric="annual_kwh")
-show_bipv_scenario_bars(result, metric="estimated_kwp")
-```
-
 The workflow grid uses the same five rows as the reference figure:
 
 ```text
@@ -157,6 +155,16 @@ Obstacle Detection
 Obstacle Removal
 Facade Alignment
 Segmentation Result
+```
+
+The final outputs are:
+
+```text
+Usable BIPV facade area
+Facade element segmentation metadata
+PVsyst data workbook (.xlsx)
+Structured data file (.json)
+Workflow/grid image (.jpg)
 ```
 
 Optional research calibration, if measured dimensions are available:

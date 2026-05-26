@@ -11,8 +11,7 @@ Facade RGB image
   -> perspective transformation / facade rectification
   -> facade alignment
   -> facade parsing: wall/window/obstacle masks
-  -> shadow and irradiance analysis
-  -> BIPV output estimation
+  -> usable BIPV area estimation
 ```
 
 ## Current Implementation
@@ -31,9 +30,14 @@ The current codebase implements the RGB-image facade parsing branch:
 | Window/wall/facade parsing | `src/segmentation.py`, `src/bipv_segmentation.py` | implemented baseline |
 | Real-world scale estimation | `src/scale_estimation.py`, `src/scaling.py` | implemented as automatic estimate |
 | Area and capacity estimation | `src/area.py`, `src/energy.py` | implemented baseline |
-| Export | `src/export.py` | implemented |
+| JSON and Excel export | `src/export.py` | implemented |
 | Workflow visualization | `src/visualization.py` | implemented |
 | Batch processing | `src/batch.py` | implemented |
+
+Shadow and illumination analysis is currently disabled in the main pipeline so
+the active work can focus on image acquisition, detection, segmentation,
+obstacle masking/removal, facade rectification, facade element segmentation, and
+usable BIPV area estimation.
 
 ## Research Gap Still To Implement
 
@@ -50,7 +54,8 @@ fully implemented yet:
 
 3. **Shadow casting from neighbouring buildings**
    - Paper uses 3D shadow modelling such as `pybdshadow`.
-   - Current code only has image-based shadow detection.
+   - Current main pipeline disables shadow/illumination analysis while the core
+     facade-area workflow is being refined.
 
 4. **Meteorological data**
    - Target sources: NSRDB, PVGIS, Meteostat, local TMY files.

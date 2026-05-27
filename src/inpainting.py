@@ -154,7 +154,35 @@ def build_obstacle_box_mask(
     return box_mask
 
 
-def _match_reconstruction_to_context(image_rgb, mask_uint8, ring_kernel_size: int = 35):
+def _enhance_reconstructed_detail(image_rgb, mask_uint8):
+    """Restore local contrast inside reconstructed regions without hard edges."""
+
+    mask = mask_uint8 > 0
+    if mask.sum() == 0:
+        return image_rgb
+
+    lab = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
+    enhanced_l = clahe.apply(l_channel)
+    enhanced_lab = cv2.merge([enhanced_l, a_channel, b_channel])
+    contrast_rgb = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
+
+    blurred = cv2.GaussianBlur(contrast_rgb, (0, 0), sigmaX=1.2)
+    sharpened = cv2.addWeighted(contrast_rgb, 1.35, blurred, -0.35, 0)
+
+    alpha = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigmaX=2.0)
+    alpha = np.clip(alpha[..., None] * 0.65, 0.0, 0.65)
+    blended = sharpened.astype(np.float32) * alpha + image_rgb.astype(np.float32) * (1.0 - alpha)
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def _match_reconstruction_to_context(
+    image_rgb,
+    mask_uint8,
+    ring_kernel_size: int = 35,
+    color_match_strength: float = 0.55,
+):
     """Color-match and feather inpainted regions to nearby unmasked context."""
 
     mask_height, mask_width = mask_uint8.shape[:2]
@@ -205,13 +233,17 @@ def _match_reconstruction_to_context(image_rgb, mask_uint8, ring_kernel_size: in
         inpaint_mean = inpaint_pixels.mean(axis=0)
         inpaint_std = inpaint_pixels.std(axis=0) + 1e-6
         matched = (inpaint_pixels - inpaint_mean) * (context_std / inpaint_std) + context_mean
+        matched = (
+            color_match_strength * matched
+            + (1.0 - color_match_strength) * inpaint_pixels
+        )
         patch[local_component] = np.clip(matched, 0, 255)
         refined[y1:y2, x1:x2] = patch
 
     alpha = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigmaX=3.0)
-    alpha = np.clip(alpha[..., None], 0.0, 1.0)
+    alpha = np.clip(alpha[..., None] * 0.85, 0.0, 0.85)
     blended = refined * alpha + original * (1.0 - alpha)
-    return np.clip(blended, 0, 255).astype(np.uint8)
+    return _enhance_reconstructed_detail(np.clip(blended, 0, 255).astype(np.uint8), mask_uint8)
 
 
 def remove_obstacles(

@@ -31,7 +31,7 @@ def run_batch_analysis(
 
     template = base_config
     models = load_models(
-        load_stable_diffusion=template.run_stable_diffusion if template else False
+        load_stable_diffusion=template.run_stable_diffusion if template else True
     )
 
     results = []

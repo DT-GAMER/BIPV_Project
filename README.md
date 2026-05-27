@@ -211,7 +211,9 @@ python -m compileall src
   can still be supplied later as validation labels to report height/width/area error.
 - The window stage uses Grounding DINO first, then SAM and CV glass-rectangle
   fallbacks inside the facade mask to reduce missed windows.
-- Stable Diffusion inpainting can be disabled in `AnalysisConfig`:
+- Stable Diffusion inpainting is enabled by default for stronger obstacle
+  reconstruction. It can be disabled in `AnalysisConfig` when GPU memory is
+  limited:
 
 ```python
 AnalysisConfig(..., run_stable_diffusion=False)

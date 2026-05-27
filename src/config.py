@@ -63,7 +63,7 @@ class AnalysisConfig:
     watts_per_panel: int = 350
     specific_yield_kwh_per_kwp: float = 950
     window_pv_correction: float = 0.70
-    run_stable_diffusion: bool = False
+    run_stable_diffusion: bool = True
     visualize: bool = True
     preserve_original_size: bool = True  # Always enforced by the pipeline for metric area safety.
     min_window_detections: int = 25

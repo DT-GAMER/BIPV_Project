@@ -152,6 +152,58 @@ def build_obstacle_box_mask(
     return box_mask
 
 
+def _match_reconstruction_to_context(image_rgb, mask_uint8, ring_kernel_size: int = 35):
+    """Color-match and feather inpainted regions to nearby unmasked context."""
+
+    mask = mask_uint8 > 0
+    if mask.sum() == 0:
+        return image_rgb
+
+    refined = image_rgb.astype(np.float32).copy()
+    original = refined.copy()
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (ring_kernel_size, ring_kernel_size),
+    )
+    dilated = cv2.dilate(mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    context_ring = dilated & ~mask
+
+    n_labels, labels = cv2.connectedComponents(mask.astype(np.uint8))
+    for label in range(1, n_labels):
+        component = labels == label
+        ys, xs = np.where(component)
+        if len(xs) == 0:
+            continue
+
+        x1 = max(0, int(xs.min()) - ring_kernel_size)
+        x2 = min(mask.shape[1], int(xs.max()) + ring_kernel_size + 1)
+        y1 = max(0, int(ys.min()) - ring_kernel_size)
+        y2 = min(mask.shape[0], int(ys.max()) + ring_kernel_size + 1)
+        local_context = context_ring[y1:y2, x1:x2]
+        local_component = component[y1:y2, x1:x2]
+        if local_context.sum() < 25:
+            continue
+
+        patch = refined[y1:y2, x1:x2]
+        context_pixels = original[y1:y2, x1:x2][local_context]
+        inpaint_pixels = patch[local_component]
+        if len(context_pixels) == 0 or len(inpaint_pixels) == 0:
+            continue
+
+        context_mean = context_pixels.mean(axis=0)
+        context_std = context_pixels.std(axis=0) + 1e-6
+        inpaint_mean = inpaint_pixels.mean(axis=0)
+        inpaint_std = inpaint_pixels.std(axis=0) + 1e-6
+        matched = (inpaint_pixels - inpaint_mean) * (context_std / inpaint_std) + context_mean
+        patch[local_component] = np.clip(matched, 0, 255)
+        refined[y1:y2, x1:x2] = patch
+
+    alpha = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigmaX=3.0)
+    alpha = np.clip(alpha[..., None], 0.0, 1.0)
+    blended = refined * alpha + original * (1.0 - alpha)
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
 def remove_obstacles(
     image_rgb,
     robust_mask,
@@ -178,6 +230,7 @@ def remove_obstacles(
 
     lama_result = lama(Image.fromarray(telea_rgb), Image.fromarray(mask_uint8))
     lama_image = np.array(lama_result)
+    lama_image = _match_reconstruction_to_context(lama_image, mask_uint8)
 
     if not run_stable_diffusion or sd_pipe is None:
         return lama_image
@@ -197,4 +250,4 @@ def remove_obstacles(
         num_inference_steps=40,
         guidance_scale=8.5,
     ).images[0]
-    return np.array(sd_result)
+    return _match_reconstruction_to_context(np.array(sd_result), mask_uint8)

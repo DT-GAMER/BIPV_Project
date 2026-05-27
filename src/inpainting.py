@@ -155,6 +155,14 @@ def build_obstacle_box_mask(
 def _match_reconstruction_to_context(image_rgb, mask_uint8, ring_kernel_size: int = 35):
     """Color-match and feather inpainted regions to nearby unmasked context."""
 
+    mask_height, mask_width = mask_uint8.shape[:2]
+    if image_rgb.shape[:2] != (mask_height, mask_width):
+        image_rgb = cv2.resize(
+            image_rgb,
+            (mask_width, mask_height),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
     mask = mask_uint8 > 0
     if mask.sum() == 0:
         return image_rgb

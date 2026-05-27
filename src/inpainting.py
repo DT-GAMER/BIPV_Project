@@ -103,9 +103,9 @@ def build_obstacle_box_mask(
     remove_ids,
     phrases,
     pad_frac: float = 0.035,
-    max_box_fraction: float = 0.12,
-    max_width_fraction: float = 0.55,
-    max_height_fraction: float = 0.50,
+    max_box_fraction: float = 0.08,
+    max_width_fraction: float = 0.45,
+    max_height_fraction: float = 0.35,
 ) -> np.ndarray:
     """Build compact DINO box supplements for obstacle masks.
 
@@ -128,7 +128,11 @@ def build_obstacle_box_mask(
         width_fraction = box_w / max(width, 1)
         height_fraction = box_h / max(height, 1)
 
-        if any(keyword in phrase for keyword in ("tree", "hedge", "bush", "fence", "railing")):
+        compact_obstacle = any(
+            keyword in phrase
+            for keyword in ("car", "vehicle", "automobile", "truck", "bus", "person")
+        )
+        if not compact_obstacle:
             continue
         if box_fraction > max_box_fraction:
             continue
@@ -137,9 +141,7 @@ def build_obstacle_box_mask(
 
         local_pad = pad_frac
         if any(keyword in phrase for keyword in ("car", "vehicle", "automobile", "truck", "bus")):
-            local_pad = max(local_pad, 0.045)
-        elif any(keyword in phrase for keyword in ("pole", "lamp", "street", "sign")):
-            local_pad = max(local_pad, 0.025)
+            local_pad = max(local_pad, 0.040)
 
         pad_x = int(width * local_pad)
         pad_y = int(height * local_pad)
@@ -218,7 +220,7 @@ def remove_obstacles(
     lama,
     sd_pipe=None,
     run_stable_diffusion: bool = True,
-    removal_dilate_kernel: int = 7,
+    removal_dilate_kernel: int = 3,
 ):
     """Remove obstacles with TELEA, LaMa, and optional Stable Diffusion refinement."""
 

@@ -103,31 +103,50 @@ def build_obstacle_box_mask(
     remove_ids,
     phrases,
     pad_frac: float = 0.035,
+    max_box_fraction: float = 0.12,
+    max_width_fraction: float = 0.55,
+    max_height_fraction: float = 0.50,
 ) -> np.ndarray:
-    """Build a full-box obstacle mask from DINO removal detections.
+    """Build compact DINO box supplements for obstacle masks.
 
-    SAM can under-segment cars, hedges, and tree crowns. The box mask is used as
-    a conservative supplement so every detected obstruction is fully removed
-    before rectification and facade parsing.
+    SAM can under-segment compact objects such as cars and poles. Full boxes are
+    risky for trees, hedges, fences, and large foreground regions because they
+    can erase the facade. Those large/irregular objects stay SAM-mask based and
+    are expanded by ``build_robust_mask`` instead.
     """
 
     height, width = image_shape[:2]
+    image_area = height * width
     box_mask = np.zeros((height, width), dtype=bool)
     for index in remove_ids:
-        x1, y1, x2, y2 = decode_box(boxes[index].cpu().numpy(), height, width)
+        raw_x1, raw_y1, raw_x2, raw_y2 = decode_box(boxes[index].cpu().numpy(), height, width)
         phrase = phrases[index].lower()
+
+        box_w = max(0.0, raw_x2 - raw_x1)
+        box_h = max(0.0, raw_y2 - raw_y1)
+        box_fraction = (box_w * box_h) / max(image_area, 1)
+        width_fraction = box_w / max(width, 1)
+        height_fraction = box_h / max(height, 1)
+
+        if any(keyword in phrase for keyword in ("tree", "hedge", "bush", "fence", "railing")):
+            continue
+        if box_fraction > max_box_fraction:
+            continue
+        if width_fraction > max_width_fraction or height_fraction > max_height_fraction:
+            continue
+
         local_pad = pad_frac
-        if any(keyword in phrase for keyword in ("tree", "hedge", "bush")):
-            local_pad = max(local_pad, 0.060)
-        elif any(keyword in phrase for keyword in ("car", "vehicle", "automobile", "truck", "bus")):
+        if any(keyword in phrase for keyword in ("car", "vehicle", "automobile", "truck", "bus")):
             local_pad = max(local_pad, 0.045)
+        elif any(keyword in phrase for keyword in ("pole", "lamp", "street", "sign")):
+            local_pad = max(local_pad, 0.025)
 
         pad_x = int(width * local_pad)
         pad_y = int(height * local_pad)
-        x1 = int(max(0, np.floor(x1 - pad_x)))
-        y1 = int(max(0, np.floor(y1 - pad_y)))
-        x2 = int(min(width - 1, np.ceil(x2 + pad_x)))
-        y2 = int(min(height - 1, np.ceil(y2 + pad_y)))
+        x1 = int(max(0, np.floor(raw_x1 - pad_x)))
+        y1 = int(max(0, np.floor(raw_y1 - pad_y)))
+        x2 = int(min(width - 1, np.ceil(raw_x2 + pad_x)))
+        y2 = int(min(height - 1, np.ceil(raw_y2 + pad_y)))
         box_mask[y1 : y2 + 1, x1 : x2 + 1] = True
 
     return box_mask

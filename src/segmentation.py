@@ -241,6 +241,46 @@ def _cluster_positions(values, tolerance):
     return [float(np.mean(cluster)) for cluster in clusters]
 
 
+def _facade_extent(mask):
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+
+
+def _extend_regular_centers(centers, lower_bound, upper_bound, max_extra: int = 2):
+    """Extend repeated grid centers into likely hidden top/bottom rows."""
+
+    centers = sorted(float(center) for center in centers)
+    if len(centers) < 2:
+        return centers
+
+    gap = float(np.median(np.diff(centers)))
+    if gap <= 1:
+        return centers
+
+    extended = list(centers)
+    for _ in range(max_extra):
+        candidate = extended[0] - gap
+        if candidate < lower_bound:
+            break
+        if extended[0] - lower_bound > 0.45 * gap:
+            extended.insert(0, candidate)
+        else:
+            break
+
+    for _ in range(max_extra):
+        candidate = extended[-1] + gap
+        if candidate > upper_bound:
+            break
+        if upper_bound - extended[-1] > 0.45 * gap:
+            extended.append(candidate)
+        else:
+            break
+
+    return extended
+
+
 def _add_grid_inferred_windows(
     existing_window_mask,
     facade_mask,
@@ -274,6 +314,22 @@ def _add_grid_inferred_windows(
         return existing_window_mask, 0
 
     height, width = existing_window_mask.shape
+    extent = _facade_extent(facade_mask)
+    if extent is not None:
+        fx1, fy1, fx2, fy2 = extent
+        x_centers = _extend_regular_centers(
+            x_centers,
+            fx1 + median_w / 2,
+            fx2 - median_w / 2,
+            max_extra=1,
+        )
+        y_centers = _extend_regular_centers(
+            y_centers,
+            fy1 + median_h / 2,
+            fy2 - median_h / 2,
+            max_extra=2,
+        )
+
     inferred = existing_window_mask.copy()
     occupied = existing_window_mask | door_mask | balcony_mask
     added = 0
@@ -302,7 +358,7 @@ def _add_grid_inferred_windows(
                 continue
             if (candidate & occupied).sum() / candidate_area > 0.20:
                 continue
-            if (candidate & reconstructed_mask).sum() / candidate_area < 0.15:
+            if (candidate & reconstructed_mask).sum() / candidate_area < 0.08:
                 continue
 
             inferred |= candidate

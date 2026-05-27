@@ -97,6 +97,42 @@ def segment_obstacles_with_sam(image_rgb, boxes, remove_ids, predictor) -> np.nd
     return combine_masks(raw_masks, height, width)
 
 
+def build_obstacle_box_mask(
+    image_shape,
+    boxes,
+    remove_ids,
+    phrases,
+    pad_frac: float = 0.035,
+) -> np.ndarray:
+    """Build a full-box obstacle mask from DINO removal detections.
+
+    SAM can under-segment cars, hedges, and tree crowns. The box mask is used as
+    a conservative supplement so every detected obstruction is fully removed
+    before rectification and facade parsing.
+    """
+
+    height, width = image_shape[:2]
+    box_mask = np.zeros((height, width), dtype=bool)
+    for index in remove_ids:
+        x1, y1, x2, y2 = decode_box(boxes[index].cpu().numpy(), height, width)
+        phrase = phrases[index].lower()
+        local_pad = pad_frac
+        if any(keyword in phrase for keyword in ("tree", "hedge", "bush")):
+            local_pad = max(local_pad, 0.060)
+        elif any(keyword in phrase for keyword in ("car", "vehicle", "automobile", "truck", "bus")):
+            local_pad = max(local_pad, 0.045)
+
+        pad_x = int(width * local_pad)
+        pad_y = int(height * local_pad)
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(width - 1, x2 + pad_x)
+        y2 = min(height - 1, y2 + pad_y)
+        box_mask[y1 : y2 + 1, x1 : x2 + 1] = True
+
+    return box_mask
+
+
 def remove_obstacles(
     image_rgb,
     robust_mask,
@@ -112,8 +148,13 @@ def remove_obstacles(
         robust_mask = cv2.dilate(robust_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
 
     mask_uint8 = (robust_mask * 255).astype(np.uint8)
+    mask_uint8 = cv2.morphologyEx(
+        mask_uint8,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+    )
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    telea_bgr = cv2.inpaint(image_bgr, mask_uint8, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
+    telea_bgr = cv2.inpaint(image_bgr, mask_uint8, inpaintRadius=11, flags=cv2.INPAINT_TELEA)
     telea_rgb = cv2.cvtColor(telea_bgr, cv2.COLOR_BGR2RGB)
 
     lama_result = lama(Image.fromarray(telea_rgb), Image.fromarray(mask_uint8))

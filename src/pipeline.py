@@ -23,7 +23,12 @@ from .geometry import (
     building_bbox_from_boxes,
     rectify_facade,
 )
-from .inpainting import build_robust_mask, remove_obstacles, segment_obstacles_with_sam
+from .inpainting import (
+    build_obstacle_box_mask,
+    build_robust_mask,
+    remove_obstacles,
+    segment_obstacles_with_sam,
+)
 from .model_loader import load_models
 from .preprocessing import load_and_preprocess_image
 from .scaling import estimate_real_world_scale
@@ -79,12 +84,12 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     )
     facade_constraint_mask = np.zeros((height, width), dtype=bool)
     if config.constrain_obstacles_to_facade:
-        pad_x = int(width * 0.02)
+        pad_x = int(width * 0.05)
         pad_y = int(height * 0.02)
         fx1 = max(0, int(bx1) - pad_x)
         fy1 = max(0, int(by1) - pad_y)
         fx2 = min(width - 1, int(bx2) + pad_x)
-        fy2 = min(height - 1, int(by2) + pad_y)
+        fy2 = height - 1
         facade_constraint_mask[fy1:fy2, fx1:fx2] = True
     else:
         facade_constraint_mask[:, :] = True
@@ -102,6 +107,13 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         source_detection.remove_ids,
         models["predictor"],
     )
+    obstacle_box_mask = build_obstacle_box_mask(
+        image_rgb.shape,
+        source_detection.boxes,
+        source_detection.remove_ids,
+        source_detection.phrases,
+    )
+    raw_obstacle_mask |= obstacle_box_mask
     raw_obstacle_mask &= facade_constraint_mask
     print("Stage 4/8 - Obstacle masking")
     robust_mask = build_robust_mask(
@@ -114,6 +126,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     robust_mask &= facade_constraint_mask
     stages["obstacle_segmentation"] = {
         "raw_obstacle_pixels": int(raw_obstacle_mask.sum()),
+        "obstacle_box_pixels": int((obstacle_box_mask & facade_constraint_mask).sum()),
         "robust_obstacle_pixels": int(robust_mask.sum()),
     }
 

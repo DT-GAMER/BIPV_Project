@@ -63,6 +63,98 @@ def robust_vanishing_point(vertical_lines):
     return np.median(np.array(points), axis=0)
 
 
+def _box_to_xyxy_norm(box):
+    cx, cy, box_width, box_height = box.cpu().numpy()
+    return np.array(
+        [
+            cx - box_width / 2,
+            cy - box_height / 2,
+            cx + box_width / 2,
+            cy + box_height / 2,
+        ],
+        dtype=float,
+    )
+
+
+def _cluster_facade_boxes(keep_boxes, image_aspect: float):
+    """Pick one coherent facade plane from architectural detections.
+
+    Grounding DINO can detect windows/doors on adjacent buildings, roof returns,
+    or side planes. Feeding all of those into rectification makes the source
+    facade too wide and causes the final wall mask to become a large blob. This
+    grouping keeps the dominant single facade plane before geometry is computed.
+    """
+
+    if len(keep_boxes) < 4:
+        return keep_boxes, {
+            "facade_cluster_count": 1 if keep_boxes else 0,
+            "selected_facade_cluster_size": len(keep_boxes),
+            "facade_cluster_strategy": "all-detections",
+        }
+
+    box_arrays = np.array([_box_to_xyxy_norm(box) for box in keep_boxes])
+    centers_x = (box_arrays[:, 0] + box_arrays[:, 2]) / 2
+    widths = np.maximum(box_arrays[:, 2] - box_arrays[:, 0], 1e-4)
+    median_width = float(np.median(widths))
+
+    order = np.argsort(centers_x)
+    sorted_centers = centers_x[order]
+    gaps = np.diff(sorted_centers)
+    # Wider images can contain multiple facade planes; tall narrow images need
+    # a slightly looser threshold so regular window columns are not split.
+    aspect_gap = 0.13 if image_aspect >= 1.1 else 0.17
+    split_gap = max(aspect_gap, median_width * 2.6)
+
+    clusters = []
+    current = [int(order[0])]
+    for gap, index in zip(gaps, order[1:]):
+        if gap > split_gap:
+            clusters.append(current)
+            current = [int(index)]
+        else:
+            current.append(int(index))
+    clusters.append(current)
+
+    if len(clusters) == 1:
+        return keep_boxes, {
+            "facade_cluster_count": 1,
+            "selected_facade_cluster_size": len(keep_boxes),
+            "facade_cluster_strategy": "single-cluster",
+        }
+
+    scored_clusters = []
+    for cluster in clusters:
+        cluster_boxes = box_arrays[cluster]
+        x_min, y_min = cluster_boxes[:, 0].min(), cluster_boxes[:, 1].min()
+        x_max, y_max = cluster_boxes[:, 2].max(), cluster_boxes[:, 3].max()
+        cluster_width = max(float(x_max - x_min), 1e-4)
+        cluster_height = max(float(y_max - y_min), 1e-4)
+        cluster_area = cluster_width * cluster_height
+        center_x = float((x_min + x_max) / 2)
+        center_bonus = max(0.0, 1.0 - abs(center_x - 0.5) * 2.0)
+        regularity_bonus = min(len(cluster), 12) / 12
+        score = len(cluster) * 1.0 + cluster_area * 5.0 + center_bonus * 1.5 + regularity_bonus
+        scored_clusters.append((score, cluster))
+
+    scored_clusters.sort(key=lambda item: item[0], reverse=True)
+    selected = scored_clusters[0][1]
+
+    # Avoid over-pruning weak detections. If the winning cluster is tiny, the
+    # full set is safer than a narrow false facade.
+    if len(selected) < 3:
+        return keep_boxes, {
+            "facade_cluster_count": len(clusters),
+            "selected_facade_cluster_size": len(keep_boxes),
+            "facade_cluster_strategy": "all-detections-weak-cluster",
+        }
+
+    return [keep_boxes[index] for index in selected], {
+        "facade_cluster_count": len(clusters),
+        "selected_facade_cluster_size": len(selected),
+        "facade_cluster_strategy": "dominant-single-facade",
+    }
+
+
 def building_bbox_from_boxes(
     boxes,
     keep_ids,
@@ -72,7 +164,14 @@ def building_bbox_from_boxes(
 ):
     keep_boxes = [boxes[index] for index in keep_ids]
     if not keep_boxes:
-        return 0, 0, width - 1, int(height * facade_roi_bottom), []
+        quality = {
+            "facade_cluster_count": 0,
+            "selected_facade_cluster_size": 0,
+            "facade_cluster_strategy": "no-detections",
+        }
+        return 0, 0, width - 1, int(height * facade_roi_bottom), [], quality
+
+    keep_boxes, quality = _cluster_facade_boxes(keep_boxes, width / max(height, 1))
 
     box_arrays = [box.cpu().numpy() for box in keep_boxes]
     x_min = max(0, min((box[0] - box[2] / 2) * width for box in box_arrays))
@@ -82,7 +181,7 @@ def building_bbox_from_boxes(
         int(height * facade_roi_bottom),
         max((box[1] + box[3] / 2) * height for box in box_arrays),
     )
-    return x_min, y_min, x_max, y_max, keep_boxes
+    return x_min, y_min, x_max, y_max, keep_boxes, quality
 
 
 def _axis_aligned_facade_bbox(clean_image, keep_boxes, pad_frac: float):

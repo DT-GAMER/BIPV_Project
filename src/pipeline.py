@@ -75,7 +75,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         facade_roi_bottom=config.facade_roi_bottom,
     )
     height, width = image_rgb.shape[:2]
-    bx1, by1, bx2, by2, keep_boxes = building_bbox_from_boxes(
+    bx1, by1, bx2, by2, keep_boxes, facade_selection_quality = building_bbox_from_boxes(
         source_detection.boxes,
         source_detection.keep_ids,
         height,
@@ -96,8 +96,10 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     stages["source_detection"] = {
         "detections": len(source_detection.phrases),
         "architectural": len(source_detection.keep_ids),
+        "selected_architectural": len(keep_boxes),
         "obstacles": len(source_detection.remove_ids),
         "source_building_bbox": [float(bx1), float(by1), float(bx2), float(by2)],
+        **facade_selection_quality,
     }
 
     print("Stage 3/8 - Image segmentation")

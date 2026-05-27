@@ -368,6 +368,37 @@ def _add_grid_inferred_windows(
     return inferred, added
 
 
+def _is_plausible_facade_candidate(candidate, building_bbox_mask):
+    bbox_area = int(building_bbox_mask.sum())
+    candidate_area = int(candidate.sum())
+    if bbox_area == 0 or candidate_area == 0:
+        return False
+
+    coverage = candidate_area / bbox_area
+    if not (0.35 <= coverage <= 1.10):
+        return False
+
+    candidate_extent = _facade_extent(candidate)
+    bbox_extent = _facade_extent(building_bbox_mask)
+    if candidate_extent is None or bbox_extent is None:
+        return False
+
+    cx1, cy1, cx2, cy2 = candidate_extent
+    bx1, by1, bx2, by2 = bbox_extent
+    candidate_w = max(cx2 - cx1 + 1, 1)
+    candidate_h = max(cy2 - cy1 + 1, 1)
+    bbox_w = max(bx2 - bx1 + 1, 1)
+    bbox_h = max(by2 - by1 + 1, 1)
+
+    if candidate_w / bbox_w < 0.70 or candidate_h / bbox_h < 0.60:
+        return False
+
+    # Reject very sparse/fragmented facade masks. For engineering area, a
+    # stable footprint is preferable to an irregular hallucinated SAM region.
+    rectangularity = candidate_area / max(candidate_w * candidate_h, 1)
+    return rectangularity >= 0.45
+
+
 def segment_facade_components(
     aligned_facade,
     mask_generator,
@@ -399,13 +430,15 @@ def segment_facade_components(
 
     auto_masks = mask_generator.generate(aligned_facade)
     facade_mask = None
-    for mask in sorted(auto_masks, key=lambda item: item["area"], reverse=True)[:5]:
+    facade_source = "building_bbox"
+    for mask in sorted(auto_masks, key=lambda item: item["area"], reverse=True)[:8]:
         candidate = mask["segmentation"] & building_bbox_mask
-        if candidate.sum() / max(building_bbox_mask.sum(), 1) > 0.10:
+        if _is_plausible_facade_candidate(candidate, building_bbox_mask):
             facade_mask = candidate
+            facade_source = "sam_plausible_candidate"
             break
     if facade_mask is None:
-        facade_mask = building_bbox_mask
+        facade_mask = building_bbox_mask.copy()
 
     boxes_raw, logits_raw, phrases_raw = detect_facade_elements(aligned_facade, dino_model, device)
     kept = apply_nms_per_class(boxes_raw, logits_raw, phrases_raw, height, width)
@@ -508,5 +541,6 @@ def segment_facade_components(
             "cv_fallback_windows_added": cv_windows_added,
             "grid_inferred_windows_added": grid_inferred_windows_added,
             "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
+            "facade_mask_source": facade_source,
         },
     }

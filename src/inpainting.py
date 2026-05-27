@@ -124,10 +124,10 @@ def build_obstacle_box_mask(
 
         pad_x = int(width * local_pad)
         pad_y = int(height * local_pad)
-        x1 = max(0, x1 - pad_x)
-        y1 = max(0, y1 - pad_y)
-        x2 = min(width - 1, x2 + pad_x)
-        y2 = min(height - 1, y2 + pad_y)
+        x1 = int(max(0, np.floor(x1 - pad_x)))
+        y1 = int(max(0, np.floor(y1 - pad_y)))
+        x2 = int(min(width - 1, np.ceil(x2 + pad_x)))
+        y2 = int(min(height - 1, np.ceil(y2 + pad_y)))
         box_mask[y1 : y2 + 1, x1 : x2 + 1] = True
 
     return box_mask

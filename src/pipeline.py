@@ -135,7 +135,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         image_rgb,
         robust_mask,
         models["lama"],
-        sd_pipe=models["sd_pipe"],
+        sd_pipe=models.get("sd_pipe"),
         run_stable_diffusion=config.run_stable_diffusion,
     )
     if models.get("sd_pipe") is not None:

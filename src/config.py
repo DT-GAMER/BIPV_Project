@@ -70,10 +70,10 @@ class AnalysisConfig:
     facade_roi_bottom: float = 0.90
     max_image_side: int | None = 1024
     constrain_obstacles_to_facade: bool = True
-    obstacle_dilate_kernel: int = 5
-    obstacle_dilate_iters: int = 1
-    obstacle_shadow_pad_frac: float = 0.0
-    max_obstacle_mask_fraction: float = 0.12
+    obstacle_dilate_kernel: int = 11
+    obstacle_dilate_iters: int = 2
+    obstacle_shadow_pad_frac: float = 0.12
+    max_obstacle_mask_fraction: float = 0.35
     exclude_obstacle_area_from_usable: bool = False
     obstacle_exclusion_dilate_kernel: int = 9
     use_cv_window_fallback: bool = True

@@ -17,6 +17,7 @@ def build_robust_mask(
     max_mask_fraction: float = 0.22,
     sparse_fill_threshold: float = 0.18,
     max_hull_bbox_fraction: float = 0.12,
+    close_kernel_scale: float = 2.0,
 ) -> np.ndarray:
     """Expand object masks without letting branchy obstacles erase the facade.
 
@@ -68,11 +69,15 @@ def build_robust_mask(
             shadow_mask[y_max:shadow_bottom, x_min:x_max] = 255
 
     kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
-    expanded = cv2.dilate(shadow_mask, kernel, iterations=dilate_iters)
+    close_size = max(3, int(round(dilate_kernel * close_kernel_scale)))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size))
+    closed = cv2.morphologyEx(shadow_mask, cv2.MORPH_CLOSE, close_kernel)
+    expanded = cv2.dilate(closed, kernel, iterations=dilate_iters)
 
     if expanded.sum() / max(image_area * 255, 1) > max_mask_fraction:
-        fallback_kernel = np.ones((max(3, dilate_kernel // 2), max(3, dilate_kernel // 2)), np.uint8)
-        expanded = cv2.dilate(uint_mask, fallback_kernel, iterations=1)
+        fallback_kernel_size = max(3, int(round(dilate_kernel * 0.75)))
+        fallback_kernel = np.ones((fallback_kernel_size, fallback_kernel_size), np.uint8)
+        expanded = cv2.dilate(closed, fallback_kernel, iterations=1)
 
     return expanded.astype(bool)
 
@@ -98,8 +103,13 @@ def remove_obstacles(
     lama,
     sd_pipe=None,
     run_stable_diffusion: bool = True,
+    removal_dilate_kernel: int = 7,
 ):
     """Remove obstacles with TELEA, LaMa, and optional Stable Diffusion refinement."""
+
+    if removal_dilate_kernel > 1:
+        kernel = np.ones((removal_dilate_kernel, removal_dilate_kernel), np.uint8)
+        robust_mask = cv2.dilate(robust_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
 
     mask_uint8 = (robust_mask * 255).astype(np.uint8)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)

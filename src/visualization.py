@@ -5,6 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import gridspec
 
 
 def show_image(image_rgb, title: str = "", figsize=(10, 6)) -> None:
@@ -62,6 +63,87 @@ def make_binary_mask_image(mask, foreground=(230, 240, 255), background=(0, 0, 0
     return image
 
 
+def _fit_image_to_canvas(image_rgb, canvas_size=(260, 190), background=(255, 255, 255)):
+    """Resize an image into a fixed canvas without distorting aspect ratio."""
+
+    target_w, target_h = canvas_size
+    image = np.asarray(image_rgb)
+    if image.ndim == 2:
+        image = np.repeat(image[:, :, None], 3, axis=2)
+
+    height, width = image.shape[:2]
+    if height <= 0 or width <= 0:
+        return np.full((target_h, target_w, 3), background, dtype=np.uint8)
+
+    scale = min(target_w / width, target_h / height)
+    new_w = max(1, int(round(width * scale)))
+    new_h = max(1, int(round(height * scale)))
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    canvas = np.full((target_h, target_w, 3), background, dtype=np.uint8)
+    x0 = (target_w - new_w) // 2
+    y0 = (target_h - new_h) // 2
+    canvas[y0 : y0 + new_h, x0 : x0 + new_w] = resized
+    return canvas
+
+
+def _draw_method_cell(axis, row, stage_name):
+    """Draw the compact method/sidebar cell used by the paper-style figure."""
+
+    method_by_row = {
+        0: "Input",
+        1: "Grounding\nDINO",
+        2: "SAM +\nInpainting",
+        3: "Perspective\nTransform",
+        4: "Grounding\nDINO + SAM",
+    }
+    icon_by_row = {
+        0: "Facade\nImage",
+        1: "Obstacle\nDetection",
+        2: "Obstacle\nRemoval",
+        3: "Facade\nAlignment",
+        4: "Segmentation\nResult",
+    }
+
+    axis.set_xlim(0, 1)
+    axis.set_ylim(0, 1)
+    axis.axis("off")
+
+    axis.text(
+        0.42,
+        0.67,
+        method_by_row.get(row, stage_name),
+        ha="center",
+        va="center",
+        fontsize=8,
+        weight="bold",
+        color="#16415f",
+        bbox={
+            "boxstyle": "round,pad=0.35",
+            "facecolor": "#d8eef7",
+            "edgecolor": "#8abed4",
+            "linewidth": 0.8,
+        },
+    )
+    axis.text(
+        0.42,
+        0.30,
+        icon_by_row.get(row, stage_name),
+        ha="center",
+        va="center",
+        fontsize=7,
+        color="#1d1d1d",
+    )
+    if row < 4:
+        axis.annotate(
+            "",
+            xy=(0.86, 0.18),
+            xytext=(0.86, -0.10),
+            xycoords="axes fraction",
+            arrowprops={"arrowstyle": "->", "color": "#2f7da4", "linewidth": 1.5},
+        )
+
+
 def workflow_images_from_result(result):
     """Create ordered stage images for one pipeline result."""
 
@@ -85,6 +167,9 @@ def build_workflow_grid_figure(
     column_titles=None,
     figsize_per_cell=(3.0, 2.2),
     label_each_panel: bool = True,
+    paper_style: bool = True,
+    show_method_column: bool = True,
+    title: str | None = "Workflow and result for building facade RGB images parsing.",
 ):
     """Build a stage-by-stage workflow figure and return it."""
     if isinstance(results, dict):
@@ -94,14 +179,45 @@ def build_workflow_grid_figure(
     stage_sets = [workflow_images_from_result(result) for result in results]
     rows = len(stage_sets[0])
 
-    fig_width = max(5, columns * figsize_per_cell[0])
+    extra_columns = 1 if paper_style and show_method_column else 0
+    fig_width = max(5, (columns + extra_columns * 0.85) * figsize_per_cell[0])
     fig_height = max(6, rows * figsize_per_cell[1])
-    fig, axes = plt.subplots(rows, columns, figsize=(fig_width, fig_height), squeeze=False)
+    if title:
+        fig_height += 0.45
+
+    if paper_style and show_method_column:
+        fig = plt.figure(figsize=(fig_width, fig_height), facecolor="white")
+        grid = gridspec.GridSpec(
+            rows,
+            columns + 1,
+            figure=fig,
+            width_ratios=[0.72] + [1.0] * columns,
+            wspace=0.08,
+            hspace=0.10,
+        )
+        axes = np.empty((rows, columns), dtype=object)
+        for row in range(rows):
+            method_axis = fig.add_subplot(grid[row, 0])
+            _draw_method_cell(method_axis, row, stage_sets[0][row][0])
+            for col in range(columns):
+                axes[row][col] = fig.add_subplot(grid[row, col + 1])
+    else:
+        fig, axes = plt.subplots(
+            rows,
+            columns,
+            figsize=(fig_width, fig_height),
+            squeeze=False,
+            facecolor="white",
+        )
 
     for col, stage_images in enumerate(stage_sets):
         for row, (stage_name, image) in enumerate(stage_images):
             axis = axes[row][col]
-            axis.imshow(image)
+            display_image = image
+            if paper_style:
+                background = (0, 0, 0) if stage_name == "Segmentation Result" else (255, 255, 255)
+                display_image = _fit_image_to_canvas(image, background=background)
+            axis.imshow(display_image)
             axis.axis("off")
             if label_each_panel:
                 axis.text(
@@ -120,17 +236,21 @@ def build_workflow_grid_figure(
                         "boxstyle": "round,pad=0.25",
                     },
                 )
-            if col == 0:
+            if col == 0 and not (paper_style and show_method_column):
                 axis.set_ylabel(stage_name, rotation=0, ha="right", va="center", labelpad=55)
             if row == 0:
-                title = (
+                column_title = (
                     column_titles[col]
                     if column_titles and col < len(column_titles)
                     else f"Image {col + 1}"
                 )
-                axis.set_title(title)
+                axis.set_title(column_title)
 
-    plt.tight_layout()
+    if title:
+        fig.text(0.5, 0.02, title, ha="center", va="bottom", fontsize=9)
+
+    if not (paper_style and show_method_column):
+        plt.tight_layout()
     return fig
 
 
@@ -139,6 +259,9 @@ def show_workflow_grid(
     column_titles=None,
     figsize_per_cell=(3.0, 2.2),
     label_each_panel: bool = True,
+    paper_style: bool = True,
+    show_method_column: bool = True,
+    title: str | None = "Workflow and result for building facade RGB images parsing.",
 ):
     """Display results like a stage-by-stage workflow figure.
 
@@ -150,6 +273,9 @@ def show_workflow_grid(
         column_titles,
         figsize_per_cell,
         label_each_panel=label_each_panel,
+        paper_style=paper_style,
+        show_method_column=show_method_column,
+        title=title,
     )
     plt.show()
 
@@ -161,6 +287,9 @@ def save_workflow_grid_image(
     figsize_per_cell=(3.0, 2.2),
     dpi: int = 300,
     label_each_panel: bool = True,
+    paper_style: bool = True,
+    show_method_column: bool = True,
+    title: str | None = "Workflow and result for building facade RGB images parsing.",
 ):
     """Save workflow grid to PNG/JPG.
 
@@ -173,14 +302,17 @@ def save_workflow_grid_image(
         column_titles,
         figsize_per_cell,
         label_each_panel=label_each_panel,
+        paper_style=paper_style,
+        show_method_column=show_method_column,
+        title=title,
     )
     path_lower = path.lower()
 
     if path_lower.endswith((".jpg", ".jpeg")):
         fig.canvas.draw()
         width, height = fig.canvas.get_width_height()
-        image_rgb = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        image_rgb = image_rgb.reshape((height, width, 3))
+        rgba = np.asarray(fig.canvas.buffer_rgba()).reshape((height, width, 4))
+        image_rgb = rgba[:, :, :3].copy()
         image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
         ok = cv2.imwrite(path, image_bgr)
         if not ok:

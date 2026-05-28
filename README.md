@@ -147,7 +147,9 @@ results = run_batch_analysis(image_paths)
 show_workflow_grid(results, column_titles=["Case 1", "Case 2", "Case 3"])
 ```
 
-The workflow grid uses the same five rows as the reference figure:
+The workflow grid is exported in a paper-style layout by default, with a left
+methodology column and fixed-size cells like the reference figure. It uses the
+same five rows:
 
 ```text
 Facade Image

@@ -368,6 +368,207 @@ def _add_grid_inferred_windows(
     return inferred, added
 
 
+def _nearest_center(value, centers):
+    if not centers:
+        return None
+    return min(centers, key=lambda center: abs(center - value))
+
+
+def _draw_window_rect(mask, facade_mask, cx, cy, box_w, box_h):
+    height, width = mask.shape
+    x1 = int(round(cx - box_w / 2))
+    y1 = int(round(cy - box_h / 2))
+    x2 = int(round(cx + box_w / 2))
+    y2 = int(round(cy + box_h / 2))
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(width, x2), min(height, y2)
+    if x2 <= x1 or y2 <= y1:
+        return False
+
+    candidate = np.zeros_like(mask, dtype=bool)
+    candidate[y1:y2, x1:x2] = True
+    candidate_area = int(candidate.sum())
+    if candidate_area == 0:
+        return False
+    if (candidate & facade_mask).sum() / candidate_area < 0.65:
+        return False
+
+    mask |= candidate & facade_mask
+    return True
+
+
+def _regularize_window_grid(
+    existing_window_mask,
+    facade_mask,
+    door_mask,
+    balcony_mask,
+    reconstructed_mask=None,
+):
+    """Convert detected windows into a cleaner row/column engineering grid.
+
+    The visual inpainting output may be imperfect, especially behind trees and
+    cars. For area estimation, repeated facade structure is more reliable: use
+    visible windows to infer rows/columns, snap detections to that grid, then add
+    missing window openings only where a removed obstacle likely hid them.
+    """
+
+    boxes = _component_boxes_from_mask(existing_window_mask, facade_mask)
+    if len(boxes) < 4:
+        return existing_window_mask, {
+            "regularized": False,
+            "regularized_windows": 0,
+            "regularized_inferred_windows": 0,
+            "grid_rows": 0,
+            "grid_columns": 0,
+            "reason": "not-enough-window-components",
+        }
+
+    widths = np.array([box["w"] for box in boxes], dtype=float)
+    heights = np.array([box["h"] for box in boxes], dtype=float)
+    median_w = float(np.median(widths))
+    median_h = float(np.median(heights))
+    if median_w <= 0 or median_h <= 0:
+        return existing_window_mask, {
+            "regularized": False,
+            "regularized_windows": 0,
+            "regularized_inferred_windows": 0,
+            "grid_rows": 0,
+            "grid_columns": 0,
+            "reason": "invalid-window-size",
+        }
+
+    # Build a grid from robust center clusters. The tolerances are intentionally
+    # forgiving because rectification is approximate for street-level photos.
+    x_centers = _cluster_positions(
+        [box["cx"] for box in boxes],
+        tolerance=max(10.0, median_w * 0.90),
+    )
+    y_centers = _cluster_positions(
+        [box["cy"] for box in boxes],
+        tolerance=max(10.0, median_h * 0.95),
+    )
+
+    extent = _facade_extent(facade_mask)
+    if extent is not None:
+        fx1, fy1, fx2, fy2 = extent
+        x_centers = _extend_regular_centers(
+            x_centers,
+            fx1 + median_w / 2,
+            fx2 - median_w / 2,
+            max_extra=2,
+        )
+        y_centers = _extend_regular_centers(
+            y_centers,
+            fy1 + median_h / 2,
+            fy2 - median_h / 2,
+            max_extra=2,
+        )
+
+    if len(x_centers) < 2 or len(y_centers) < 2:
+        return existing_window_mask, {
+            "regularized": False,
+            "regularized_windows": 0,
+            "regularized_inferred_windows": 0,
+            "grid_rows": len(y_centers),
+            "grid_columns": len(x_centers),
+            "reason": "weak-grid",
+        }
+
+    height, width = existing_window_mask.shape
+    regularized = np.zeros((height, width), dtype=bool)
+    occupied = door_mask | balcony_mask
+    grid_hits = {}
+    row_support = {index: 0 for index in range(len(y_centers))}
+    col_support = {index: 0 for index in range(len(x_centers))}
+
+    rect_w = int(np.clip(round(median_w), 5, max(width, 5)))
+    rect_h = int(np.clip(round(median_h), 7, max(height, 7)))
+
+    for box in boxes:
+        snapped_x = _nearest_center(box["cx"], x_centers)
+        snapped_y = _nearest_center(box["cy"], y_centers)
+        if snapped_x is None or snapped_y is None:
+            continue
+
+        col = int(np.argmin([abs(center - snapped_x) for center in x_centers]))
+        row = int(np.argmin([abs(center - snapped_y) for center in y_centers]))
+        grid_hits[(row, col)] = True
+        row_support[row] += 1
+        col_support[col] += 1
+
+        local_w = int(np.clip(round(0.5 * box["w"] + 0.5 * median_w), 5, median_w * 1.45))
+        local_h = int(np.clip(round(0.5 * box["h"] + 0.5 * median_h), 7, median_h * 1.45))
+        _draw_window_rect(regularized, facade_mask, snapped_x, snapped_y, local_w, local_h)
+
+    inferred_added = 0
+    if reconstructed_mask is not None and reconstructed_mask.sum() > 0:
+        for row, cy in enumerate(y_centers):
+            for col, cx in enumerate(x_centers):
+                if (row, col) in grid_hits:
+                    continue
+                if row_support.get(row, 0) < 2 or col_support.get(col, 0) < 2:
+                    continue
+
+                candidate = np.zeros((height, width), dtype=bool)
+                x1 = int(round(cx - rect_w / 2))
+                y1 = int(round(cy - rect_h / 2))
+                x2 = int(round(cx + rect_w / 2))
+                y2 = int(round(cy + rect_h / 2))
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(width, x2), min(height, y2)
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                candidate[y1:y2, x1:x2] = True
+                candidate_area = int(candidate.sum())
+                if candidate_area == 0:
+                    continue
+
+                if (candidate & facade_mask).sum() / candidate_area < 0.65:
+                    continue
+                if (candidate & occupied).sum() / candidate_area > 0.15:
+                    continue
+                # Only create new windows in areas that were actually hidden by
+                # an obstacle/removal mask. This avoids inventing full grids on
+                # plain walls with intentionally irregular fenestration.
+                if (candidate & reconstructed_mask).sum() / candidate_area < 0.10:
+                    continue
+
+                regularized |= candidate & facade_mask
+                inferred_added += 1
+
+    # Keep the final engineering mask grid-shaped. If the grid is too weak, the
+    # function returns the original mask earlier instead of forcing rectangles.
+    regularized = cv2.morphologyEx(
+        regularized.astype(np.uint8) * 255,
+        cv2.MORPH_CLOSE,
+        np.ones((3, 3), np.uint8),
+    ).astype(bool)
+    regularized &= facade_mask & ~occupied
+
+    if regularized.sum() < existing_window_mask.sum() * 0.35:
+        return existing_window_mask, {
+            "regularized": False,
+            "regularized_windows": len(boxes),
+            "regularized_inferred_windows": 0,
+            "grid_rows": len(y_centers),
+            "grid_columns": len(x_centers),
+            "median_window_width_px": median_w,
+            "median_window_height_px": median_h,
+            "reason": "regularized-mask-too-small",
+        }
+
+    return regularized, {
+        "regularized": True,
+        "regularized_windows": len(boxes),
+        "regularized_inferred_windows": inferred_added,
+        "grid_rows": len(y_centers),
+        "grid_columns": len(x_centers),
+        "median_window_width_px": median_w,
+        "median_window_height_px": median_h,
+        "reason": "ok",
+    }
+
+
 def _is_plausible_facade_candidate(candidate, building_bbox_mask):
     bbox_area = int(building_bbox_mask.sum())
     candidate_area = int(candidate.sum())
@@ -524,10 +725,19 @@ def segment_facade_components(
         balcony_mask,
         reconstructed_mask=reconstructed_mask,
     )
+    raw_window_mask = window_mask.copy()
+    window_mask, grid_quality = _regularize_window_grid(
+        window_mask,
+        facade_mask,
+        door_mask,
+        balcony_mask,
+        reconstructed_mask=reconstructed_mask,
+    )
 
     return {
         "facade_mask": facade_mask,
         "window_mask": window_mask,
+        "raw_window_mask": raw_window_mask,
         "door_mask": door_mask,
         "balcony_mask": balcony_mask,
         "boxes": boxes,
@@ -540,6 +750,14 @@ def segment_facade_components(
             "sam_fallback_windows_added": fallback_windows_added,
             "cv_fallback_windows_added": cv_windows_added,
             "grid_inferred_windows_added": grid_inferred_windows_added,
+            "grid_regularized": grid_quality["regularized"],
+            "grid_regularization_reason": grid_quality["reason"],
+            "grid_regularized_windows": grid_quality["regularized_windows"],
+            "grid_regularized_inferred_windows": grid_quality["regularized_inferred_windows"],
+            "grid_rows": grid_quality["grid_rows"],
+            "grid_columns": grid_quality["grid_columns"],
+            "median_window_width_px": grid_quality.get("median_window_width_px"),
+            "median_window_height_px": grid_quality.get("median_window_height_px"),
             "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
             "facade_mask_source": facade_source,
         },

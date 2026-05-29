@@ -30,28 +30,7 @@ def show_mask_overlay(
 def show_segmentation_alignment(result, figsize=(10, 7)) -> None:
     """Display facade/window/usable masks over the aligned facade for checking."""
 
-    aligned = result["aligned_facade"]
-    segmentation = result["segmentation"]
-    usable_mask = result["usable_results"]["usable_mask"]
-
-    overlay = aligned.copy()
-    facade_mask = segmentation["facade_mask"]
-    window_mask = segmentation["window_mask"]
-    door_mask = segmentation["door_mask"]
-    balcony_mask = segmentation["balcony_mask"]
-
-    overlay[facade_mask] = (
-        0.75 * overlay[facade_mask].astype(np.float32)
-        + 0.25 * np.array([0, 255, 0], dtype=np.float32)
-    ).astype(np.uint8)
-    overlay[usable_mask] = (
-        0.60 * overlay[usable_mask].astype(np.float32)
-        + 0.40 * np.array([0, 180, 0], dtype=np.float32)
-    ).astype(np.uint8)
-    overlay[window_mask] = np.array([0, 120, 255], dtype=np.uint8)
-    overlay[door_mask | balcony_mask] = np.array([255, 160, 0], dtype=np.uint8)
-
-    show_image(overlay, "Segmentation Alignment Check", figsize=figsize)
+    show_image(make_segmentation_alignment_image(result), "Segmentation Alignment Check", figsize=figsize)
 
 
 def show_side_by_side(
@@ -88,6 +67,32 @@ def make_binary_mask_image(mask, foreground=(230, 240, 255), background=(0, 0, 0
     image[:, :] = background
     image[mask] = foreground
     return image
+
+
+def make_segmentation_alignment_image(result):
+    """Return facade/window/usable masks overlaid on the aligned facade."""
+
+    aligned = result["aligned_facade"]
+    segmentation = result["segmentation"]
+    usable_mask = result["usable_results"]["usable_mask"]
+
+    overlay = aligned.copy()
+    facade_mask = segmentation["facade_mask"]
+    window_mask = segmentation["window_mask"]
+    door_mask = segmentation["door_mask"]
+    balcony_mask = segmentation["balcony_mask"]
+
+    overlay[facade_mask] = (
+        0.78 * overlay[facade_mask].astype(np.float32)
+        + 0.22 * np.array([0, 255, 0], dtype=np.float32)
+    ).astype(np.uint8)
+    overlay[usable_mask] = (
+        0.68 * overlay[usable_mask].astype(np.float32)
+        + 0.32 * np.array([0, 190, 0], dtype=np.float32)
+    ).astype(np.uint8)
+    overlay[window_mask] = np.array([0, 120, 255], dtype=np.uint8)
+    overlay[door_mask | balcony_mask] = np.array([255, 160, 0], dtype=np.uint8)
+    return overlay
 
 
 def _fit_image_to_canvas(image_rgb, canvas_size=(260, 190), background=(255, 255, 255)):
@@ -171,8 +176,15 @@ def _draw_method_cell(axis, row, stage_name):
         )
 
 
-def workflow_images_from_result(result):
+def workflow_images_from_result(result, segmentation_view: str = "overlay"):
     """Create ordered stage images for one pipeline result."""
+
+    if segmentation_view == "overlay":
+        segmentation_title = "Segmentation Overlay"
+        segmentation_image = make_segmentation_alignment_image(result)
+    else:
+        segmentation_title = "Segmentation Result"
+        segmentation_image = make_binary_mask_image(result["usable_results"]["usable_mask"])
 
     return [
         ("Facade Image", result["image_rgb"]),
@@ -182,10 +194,7 @@ def workflow_images_from_result(result):
         ),
         ("Obstacle Removal", result["clean_image"]),
         ("Facade Alignment", result["aligned_facade"]),
-        (
-            "Segmentation Result",
-            make_binary_mask_image(result["usable_results"]["usable_mask"]),
-        ),
+        (segmentation_title, segmentation_image),
     ]
 
 
@@ -197,13 +206,17 @@ def build_workflow_grid_figure(
     paper_style: bool = True,
     show_method_column: bool = True,
     title: str | None = "Workflow and result for building facade RGB images parsing.",
+    segmentation_view: str = "overlay",
 ):
     """Build a stage-by-stage workflow figure and return it."""
     if isinstance(results, dict):
         results = [results]
 
     columns = len(results)
-    stage_sets = [workflow_images_from_result(result) for result in results]
+    stage_sets = [
+        workflow_images_from_result(result, segmentation_view=segmentation_view)
+        for result in results
+    ]
     rows = len(stage_sets[0])
 
     extra_columns = 1 if paper_style and show_method_column else 0
@@ -289,6 +302,7 @@ def show_workflow_grid(
     paper_style: bool = True,
     show_method_column: bool = True,
     title: str | None = "Workflow and result for building facade RGB images parsing.",
+    segmentation_view: str = "overlay",
 ):
     """Display results like a stage-by-stage workflow figure.
 
@@ -303,6 +317,7 @@ def show_workflow_grid(
         paper_style=paper_style,
         show_method_column=show_method_column,
         title=title,
+        segmentation_view=segmentation_view,
     )
     plt.show()
 
@@ -317,6 +332,7 @@ def save_workflow_grid_image(
     paper_style: bool = True,
     show_method_column: bool = True,
     title: str | None = "Workflow and result for building facade RGB images parsing.",
+    segmentation_view: str = "overlay",
 ):
     """Save workflow grid to PNG/JPG.
 
@@ -332,6 +348,7 @@ def save_workflow_grid_image(
         paper_style=paper_style,
         show_method_column=show_method_column,
         title=title,
+        segmentation_view=segmentation_view,
     )
     path_lower = path.lower()
 

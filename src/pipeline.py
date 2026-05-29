@@ -295,6 +295,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         energy_yield=energy_yield,
         validation=validation,
         bipv_scenarios=bipv_scenarios,
+        stage_quality=stages,
     )
     save_pvsyst_export(config.output_path, export_data)
     excel_output_path = excel_path_from_json_path(config.output_path)
@@ -329,6 +330,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "panel_capacity": panel_capacity,
         "energy_yield": energy_yield,
         "bipv_scenarios": bipv_scenarios,
+        "measurement_quality": segmentation["quality"]["measurement_quality"],
         "export_data": export_data,
         "stages": stages,
         "output_path": config.output_path,

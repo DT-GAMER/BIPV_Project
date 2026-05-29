@@ -604,6 +604,52 @@ def _regularize_window_grid(
     }
 
 
+def segmentation_measurement_quality(quality):
+    """Return an engineering trust flag for the facade segmentation result."""
+
+    facade_coverage = float(quality.get("facade_coverage_percent") or 0)
+    dino_windows = int(quality.get("dino_window_count") or 0)
+    grid_rows = int(quality.get("grid_rows") or 0)
+    grid_columns = int(quality.get("grid_columns") or 0)
+    regularized = bool(quality.get("grid_regularized"))
+    reason = quality.get("grid_regularization_reason")
+
+    issues = []
+    if facade_coverage < 8:
+        issues.append("facade-mask-too-small")
+    if facade_coverage > 85:
+        issues.append("facade-mask-too-large")
+    if dino_windows < 4:
+        issues.append("few-direct-window-detections")
+    if grid_rows < 2 or grid_columns < 2:
+        issues.append("weak-window-grid")
+    if not regularized:
+        issues.append(f"grid-not-regularized:{reason}")
+
+    if not issues:
+        return {
+            "status": "calculation_ready",
+            "confidence": 0.90,
+            "issues": [],
+            "message": "Facade/window segmentation passed automatic geometry checks.",
+        }
+
+    if len(issues) <= 2 and dino_windows >= 4:
+        return {
+            "status": "review_recommended",
+            "confidence": 0.65,
+            "issues": issues,
+            "message": "Area was calculated, but the segmentation should be visually checked.",
+        }
+
+    return {
+        "status": "manual_review_required",
+        "confidence": 0.35,
+        "issues": issues,
+        "message": "Segmentation is not reliable enough for final engineering use without review.",
+    }
+
+
 def _is_plausible_facade_candidate(candidate, building_bbox_mask):
     bbox_area = int(building_bbox_mask.sum())
     candidate_area = int(candidate.sum())
@@ -763,6 +809,24 @@ def segment_facade_components(
     )
     grid_inferred_windows_added = grid_quality["regularized_inferred_windows"]
 
+    quality = {
+        "dino_window_count": window_count,
+        "sam_fallback_windows_added": fallback_windows_added,
+        "cv_fallback_windows_added": cv_windows_added,
+        "grid_inferred_windows_added": grid_inferred_windows_added,
+        "grid_regularized": grid_quality["regularized"],
+        "grid_regularization_reason": grid_quality["reason"],
+        "grid_regularized_windows": grid_quality["regularized_windows"],
+        "grid_regularized_inferred_windows": grid_quality["regularized_inferred_windows"],
+        "grid_rows": grid_quality["grid_rows"],
+        "grid_columns": grid_quality["grid_columns"],
+        "median_window_width_px": grid_quality.get("median_window_width_px"),
+        "median_window_height_px": grid_quality.get("median_window_height_px"),
+        "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
+        "facade_mask_source": facade_source,
+    }
+    quality["measurement_quality"] = segmentation_measurement_quality(quality)
+
     return {
         "facade_mask": facade_mask,
         "window_mask": window_mask,
@@ -774,20 +838,5 @@ def segment_facade_components(
         "phrases": phrases,
         "building_bbox_mask": building_bbox_mask,
         "auto_masks": auto_masks,
-        "quality": {
-            "dino_window_count": window_count,
-            "sam_fallback_windows_added": fallback_windows_added,
-            "cv_fallback_windows_added": cv_windows_added,
-            "grid_inferred_windows_added": grid_inferred_windows_added,
-            "grid_regularized": grid_quality["regularized"],
-            "grid_regularization_reason": grid_quality["reason"],
-            "grid_regularized_windows": grid_quality["regularized_windows"],
-            "grid_regularized_inferred_windows": grid_quality["regularized_inferred_windows"],
-            "grid_rows": grid_quality["grid_rows"],
-            "grid_columns": grid_quality["grid_columns"],
-            "median_window_width_px": grid_quality.get("median_window_width_px"),
-            "median_window_height_px": grid_quality.get("median_window_height_px"),
-            "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
-            "facade_mask_source": facade_source,
-        },
+        "quality": quality,
     }

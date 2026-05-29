@@ -16,6 +16,7 @@ def prepare_pvsyst_export(
     energy_yield=None,
     validation=None,
     bipv_scenarios=None,
+    stage_quality=None,
 ):
     return {
         "metadata": {
@@ -23,6 +24,7 @@ def prepare_pvsyst_export(
             "image_path": image_path,
             "analysis_tool": "BIPV Facade Analysis Pipeline",
             "validation": validation or {},
+            "stage_quality": stage_quality or {},
         },
         "building_dimensions": {
             "width_m": dimensions["width_m"],
@@ -121,6 +123,9 @@ def save_pvsyst_excel(path: str, data) -> None:
     energy = data.get("energy_yield", {})
     metadata = data.get("metadata", {})
     validation = metadata.get("validation", {})
+    stage_quality = metadata.get("stage_quality", {})
+    segmentation_quality = stage_quality.get("segmentation", {})
+    measurement_quality = segmentation_quality.get("measurement_quality", {})
 
     summary_rows = {
         "image_path": metadata.get("image_path"),
@@ -144,6 +149,9 @@ def save_pvsyst_excel(path: str, data) -> None:
         "watts_per_panel": pv_system.get("watts_per_panel"),
         "annual_kwh": energy.get("annual_kwh"),
         "validation_status": validation.get("status"),
+        "measurement_status": measurement_quality.get("status"),
+        "measurement_confidence": measurement_quality.get("confidence"),
+        "measurement_message": measurement_quality.get("message"),
     }
     for key, value in summary_rows.items():
         summary.append([key, _excel_cell_value(value)])
@@ -154,6 +162,7 @@ def save_pvsyst_excel(path: str, data) -> None:
     _append_mapping_sheet(workbook, "PV_System", pv_system)
     _append_mapping_sheet(workbook, "Energy_Yield", energy)
     _append_mapping_sheet(workbook, "Validation", validation)
+    _append_mapping_sheet(workbook, "Stage_Quality", stage_quality)
 
     _autosize_columns(workbook)
     workbook.save(output_path)

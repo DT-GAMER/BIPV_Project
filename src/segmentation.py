@@ -480,14 +480,21 @@ def _regularize_window_grid(
     grid_hits = {}
     row_support = {index: 0 for index in range(len(y_centers))}
     col_support = {index: 0 for index in range(len(x_centers))}
+    drawn_windows = 0
 
     rect_w = int(np.clip(round(median_w), 5, max(width, 5)))
     rect_h = int(np.clip(round(median_h), 7, max(height, 7)))
+    max_snap_dx = max(12.0, median_w * 1.25)
+    max_snap_dy = max(12.0, median_h * 1.25)
 
     for box in boxes:
         snapped_x = _nearest_center(box["cx"], x_centers)
         snapped_y = _nearest_center(box["cy"], y_centers)
         if snapped_x is None or snapped_y is None:
+            continue
+        if abs(snapped_x - box["cx"]) > max_snap_dx:
+            continue
+        if abs(snapped_y - box["cy"]) > max_snap_dy:
             continue
 
         col = int(np.argmin([abs(center - snapped_x) for center in x_centers]))
@@ -498,15 +505,32 @@ def _regularize_window_grid(
 
         local_w = int(np.clip(round(0.5 * box["w"] + 0.5 * median_w), 5, median_w * 1.45))
         local_h = int(np.clip(round(0.5 * box["h"] + 0.5 * median_h), 7, median_h * 1.45))
-        _draw_window_rect(regularized, facade_mask, snapped_x, snapped_y, local_w, local_h)
+        if _draw_window_rect(regularized, facade_mask, snapped_x, snapped_y, local_w, local_h):
+            drawn_windows += 1
+
+    if drawn_windows < max(4, int(len(boxes) * 0.65)):
+        return existing_window_mask, {
+            "regularized": False,
+            "regularized_windows": drawn_windows,
+            "regularized_inferred_windows": 0,
+            "grid_rows": len(y_centers),
+            "grid_columns": len(x_centers),
+            "median_window_width_px": median_w,
+            "median_window_height_px": median_h,
+            "reason": "grid-snap-mismatch",
+        }
 
     inferred_added = 0
     if reconstructed_mask is not None and reconstructed_mask.sum() > 0:
+        min_row_support = max(2, int(len(x_centers) * 0.20))
+        min_col_support = max(2, int(len(y_centers) * 0.20))
         for row, cy in enumerate(y_centers):
             for col, cx in enumerate(x_centers):
                 if (row, col) in grid_hits:
                     continue
-                if row_support.get(row, 0) < 2 or col_support.get(col, 0) < 2:
+                if row_support.get(row, 0) < min_row_support:
+                    continue
+                if col_support.get(col, 0) < min_col_support:
                     continue
 
                 candidate = np.zeros((height, width), dtype=bool)
@@ -548,7 +572,7 @@ def _regularize_window_grid(
     if regularized.sum() < existing_window_mask.sum() * 0.35:
         return existing_window_mask, {
             "regularized": False,
-            "regularized_windows": len(boxes),
+            "regularized_windows": drawn_windows,
             "regularized_inferred_windows": 0,
             "grid_rows": len(y_centers),
             "grid_columns": len(x_centers),
@@ -556,10 +580,21 @@ def _regularize_window_grid(
             "median_window_height_px": median_h,
             "reason": "regularized-mask-too-small",
         }
+    if regularized.sum() > existing_window_mask.sum() * 2.60:
+        return existing_window_mask, {
+            "regularized": False,
+            "regularized_windows": drawn_windows,
+            "regularized_inferred_windows": 0,
+            "grid_rows": len(y_centers),
+            "grid_columns": len(x_centers),
+            "median_window_width_px": median_w,
+            "median_window_height_px": median_h,
+            "reason": "regularized-mask-too-large",
+        }
 
     return regularized, {
         "regularized": True,
-        "regularized_windows": len(boxes),
+        "regularized_windows": drawn_windows,
         "regularized_inferred_windows": inferred_added,
         "grid_rows": len(y_centers),
         "grid_columns": len(x_centers),
@@ -718,13 +753,6 @@ def segment_facade_components(
             min_area_fraction=cv_window_min_area_fraction,
             max_area_fraction=cv_window_max_area_fraction,
         )
-    window_mask, grid_inferred_windows_added = _add_grid_inferred_windows(
-        window_mask,
-        facade_mask,
-        door_mask,
-        balcony_mask,
-        reconstructed_mask=reconstructed_mask,
-    )
     raw_window_mask = window_mask.copy()
     window_mask, grid_quality = _regularize_window_grid(
         window_mask,
@@ -733,6 +761,7 @@ def segment_facade_components(
         balcony_mask,
         reconstructed_mask=reconstructed_mask,
     )
+    grid_inferred_windows_added = grid_quality["regularized_inferred_windows"]
 
     return {
         "facade_mask": facade_mask,

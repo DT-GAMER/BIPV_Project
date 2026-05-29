@@ -27,6 +27,33 @@ def show_mask_overlay(
     show_image(overlay, title)
 
 
+def show_segmentation_alignment(result, figsize=(10, 7)) -> None:
+    """Display facade/window/usable masks over the aligned facade for checking."""
+
+    aligned = result["aligned_facade"]
+    segmentation = result["segmentation"]
+    usable_mask = result["usable_results"]["usable_mask"]
+
+    overlay = aligned.copy()
+    facade_mask = segmentation["facade_mask"]
+    window_mask = segmentation["window_mask"]
+    door_mask = segmentation["door_mask"]
+    balcony_mask = segmentation["balcony_mask"]
+
+    overlay[facade_mask] = (
+        0.75 * overlay[facade_mask].astype(np.float32)
+        + 0.25 * np.array([0, 255, 0], dtype=np.float32)
+    ).astype(np.uint8)
+    overlay[usable_mask] = (
+        0.60 * overlay[usable_mask].astype(np.float32)
+        + 0.40 * np.array([0, 180, 0], dtype=np.float32)
+    ).astype(np.uint8)
+    overlay[window_mask] = np.array([0, 120, 255], dtype=np.uint8)
+    overlay[door_mask | balcony_mask] = np.array([255, 160, 0], dtype=np.uint8)
+
+    show_image(overlay, "Segmentation Alignment Check", figsize=figsize)
+
+
 def show_side_by_side(
     left,
     right,

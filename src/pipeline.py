@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import gc
+from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 
@@ -33,6 +35,7 @@ from .model_loader import load_models
 from .preprocessing import load_and_preprocess_image
 from .scaling import estimate_real_world_scale
 from .segmentation import segment_facade_components
+from .trained_facade_parser import run_trained_facade_parser
 
 
 def _disabled_shadow_analysis(facade_mask):
@@ -44,6 +47,169 @@ def _disabled_shadow_analysis(facade_mask):
         "shadow_percentage": 0.0,
         "shadow_mask": shadow_mask,
         "status": "disabled",
+    }
+
+
+def _resolve_trained_facade_parser_path(config: AnalysisConfig) -> Path | None:
+    """Return the first trained facade parser weights file available."""
+
+    candidates = []
+    if config.trained_facade_parser_path:
+        candidates.append(Path(config.trained_facade_parser_path))
+    candidates.append(Path("models/facade_parser.pt"))
+    if config.trained_facade_parser_drive_path:
+        candidates.append(Path(config.trained_facade_parser_drive_path))
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _measurement_quality_from_trained_parser(quality, facade_mask, window_mask):
+    """Create an engineering quality flag for trained parser output."""
+
+    height, width = facade_mask.shape[:2]
+    facade_coverage = float(facade_mask.sum() / max(height * width, 1) * 100)
+    window_components = _window_boxes_from_mask(window_mask, facade_mask)
+    issues = []
+
+    if quality.get("status") != "ok":
+        issues.append(f"trained-parser-status:{quality.get('status')}")
+    if facade_coverage < 8:
+        issues.append("facade-mask-too-small")
+    if facade_coverage > 85:
+        issues.append("facade-mask-too-large")
+    if len(window_components) < 4:
+        issues.append("few-trained-window-detections")
+
+    if not issues:
+        return {
+            "status": "calculation_ready",
+            "confidence": 0.90,
+            "issues": [],
+            "message": "Trained facade parser produced usable facade/opening masks.",
+        }
+    if len(issues) <= 2 and len(window_components) >= 4:
+        return {
+            "status": "review_recommended",
+            "confidence": 0.70,
+            "issues": issues,
+            "message": "Trained segmentation ran, but the result should be visually checked.",
+        }
+    return {
+        "status": "manual_review_required",
+        "confidence": 0.40,
+        "issues": issues,
+        "message": "Trained segmentation is not reliable enough for final engineering use without review.",
+    }
+
+
+def _window_boxes_from_mask(window_mask, facade_mask):
+    """Extract normalized xywh boxes from a binary opening mask."""
+
+    height, width = window_mask.shape[:2]
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        window_mask.astype(np.uint8),
+        connectivity=8,
+    )
+    facade_area = max(int(facade_mask.sum()), 1)
+    boxes = []
+    for label_id in range(1, num_labels):
+        x, y, w, h, area = stats[label_id]
+        area_fraction = float(area / facade_area)
+        if area_fraction < 0.00015 or area_fraction > 0.08:
+            continue
+        if w < 3 or h < 3:
+            continue
+        boxes.append(
+            [
+                float((x + w / 2) / max(width, 1)),
+                float((y + h / 2) / max(height, 1)),
+                float(w / max(width, 1)),
+                float(h / max(height, 1)),
+            ]
+        )
+    return np.array(boxes, dtype=float)
+
+
+def _segmentation_from_trained_parser(aligned_facade, config, device):
+    """Run the trained parser when weights exist; otherwise return None."""
+
+    weights_path = _resolve_trained_facade_parser_path(config)
+    if not config.use_trained_facade_parser:
+        return None, {
+            "enabled": False,
+            "status": "not-used",
+            "reason": "disabled-in-config",
+        }
+    if weights_path is None:
+        return None, {
+            "enabled": config.use_trained_facade_parser,
+            "status": "not-used",
+            "reason": "no-trained-weights-found",
+        }
+
+    try:
+        parser_result = run_trained_facade_parser(
+            aligned_facade,
+            str(weights_path),
+            conf=config.trained_facade_parser_conf,
+            imgsz=config.trained_facade_parser_imgsz,
+            device=device,
+        )
+    except Exception as exc:
+        return None, {
+            "enabled": True,
+            "status": "fallback",
+            "reason": f"trained-parser-error:{type(exc).__name__}",
+            "message": str(exc),
+            "weights_path": str(weights_path),
+        }
+
+    if parser_result.quality.get("status") != "ok" or parser_result.facade_mask.sum() == 0:
+        return None, {
+            **parser_result.quality,
+            "enabled": True,
+            "status": "fallback",
+            "reason": "trained-parser-did-not-return-usable-facade-mask",
+            "weights_path": str(weights_path),
+        }
+
+    facade_mask = parser_result.facade_mask.astype(bool)
+    window_mask = (parser_result.window_mask & facade_mask).astype(bool)
+    door_mask = (parser_result.door_mask & facade_mask).astype(bool)
+    balcony_mask = (parser_result.balcony_mask & facade_mask).astype(bool)
+    facade_coverage = float(facade_mask.sum() / max(facade_mask.size, 1) * 100)
+    window_boxes = _window_boxes_from_mask(window_mask, facade_mask)
+    quality = {
+        **parser_result.quality,
+        "parser_source": "trained_facade_parser",
+        "trained_facade_parser_path": str(weights_path),
+        "trained_window_count": int(len(window_boxes)),
+        "facade_coverage_percent": facade_coverage,
+    }
+    quality["measurement_quality"] = _measurement_quality_from_trained_parser(
+        parser_result.quality,
+        facade_mask,
+        window_mask,
+    )
+
+    return {
+        "facade_mask": facade_mask,
+        "window_mask": window_mask,
+        "raw_window_mask": window_mask.copy(),
+        "door_mask": door_mask,
+        "balcony_mask": balcony_mask,
+        "boxes": torch.empty((0, 4)),
+        "logits": torch.empty((0,)),
+        "phrases": [],
+        "auto_masks": [],
+        "quality": quality,
+    }, {
+        "enabled": True,
+        "status": "used",
+        "weights_path": str(weights_path),
     }
 
 
@@ -176,23 +342,32 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     reconstructed_mask = warp_mask(robust_mask, transform_matrix, aligned_facade.shape)
 
     print("Stage 7/8 - Facade element segmentation and alignment")
-    segmentation = segment_facade_components(
+    segmentation, trained_parser_stage = _segmentation_from_trained_parser(
         aligned_facade,
-        models["mask_generator"],
-        models["predictor"],
-        models["dino_model"],
+        config,
         device,
-        (bx1, by1, bx2, by2),
-        transform_matrix,
-        min_window_detections=config.min_window_detections,
-        use_cv_window_fallback=config.use_cv_window_fallback,
-        cv_window_min_area_fraction=config.cv_window_min_area_fraction,
-        cv_window_max_area_fraction=config.cv_window_max_area_fraction,
-        reconstructed_mask=reconstructed_mask,
     )
+    stages["trained_facade_parser"] = trained_parser_stage
+    if segmentation is None:
+        segmentation = segment_facade_components(
+            aligned_facade,
+            models["mask_generator"],
+            models["predictor"],
+            models["dino_model"],
+            device,
+            (bx1, by1, bx2, by2),
+            transform_matrix,
+            min_window_detections=config.min_window_detections,
+            use_cv_window_fallback=config.use_cv_window_fallback,
+            cv_window_min_area_fraction=config.cv_window_min_area_fraction,
+            cv_window_max_area_fraction=config.cv_window_max_area_fraction,
+            reconstructed_mask=reconstructed_mask,
+        )
     if rectified_content_mask is not None:
         segmentation["facade_mask"] &= rectified_content_mask
         segmentation["window_mask"] &= segmentation["facade_mask"]
+        if "raw_window_mask" in segmentation:
+            segmentation["raw_window_mask"] &= segmentation["facade_mask"]
         segmentation["door_mask"] &= segmentation["facade_mask"]
         segmentation["balcony_mask"] &= segmentation["facade_mask"]
     stages["segmentation"] = segmentation["quality"]
@@ -204,6 +379,11 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
             if "window" in phrase.lower()
         ]
     )
+    if len(window_boxes_np) == 0:
+        window_boxes_np = _window_boxes_from_mask(
+            segmentation["window_mask"],
+            segmentation["facade_mask"],
+        )
     facade_grid = align_facade_grid(window_boxes_np)
     stages["alignment"] = {
         "floor_bands": len(facade_grid["floors"]),

@@ -1,0 +1,28 @@
+# Dataset config for YOLO segmentation facade parser training.
+#
+# Expected folder layout:
+# training/datasets/facade_parser/
+#   images/
+#     train/
+#     val/
+#     test/          # optional
+#   labels/
+#     train/
+#     val/
+#     test/          # optional
+#
+# Labels must be YOLO segmentation .txt files:
+# class_id x1 y1 x2 y2 x3 y3 ... with all coordinates normalized 0..1.
+
+path: training/datasets/facade_parser
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: balcony
+  1: door
+  2: facade_wall
+  3: obstacle
+  4: roof_edge
+  5: window_opening

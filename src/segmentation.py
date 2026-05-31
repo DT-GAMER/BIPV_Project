@@ -190,6 +190,71 @@ def _add_cv_window_fallback(
     return fallback_mask, added
 
 
+def _add_dino_window_box_seeds(
+    existing_window_mask,
+    boxes,
+    phrases,
+    facade_mask,
+    door_mask,
+    balcony_mask,
+):
+    """Preserve reliable DINO window boxes when SAM under-segments them.
+
+    SAM sometimes returns a weak/partial mask for small or reflective windows.
+    The DINO box is still valuable geometry, so we add a slightly shrunken
+    rectangular seed before the final grid regularization stage.
+    """
+
+    height, width = facade_mask.shape
+    facade_area = int(facade_mask.sum())
+    if facade_area == 0 or len(boxes) == 0:
+        return existing_window_mask, 0
+
+    seeded = existing_window_mask.copy()
+    occupied = door_mask | balcony_mask
+    added = 0
+
+    for box, phrase in zip(boxes, phrases):
+        if "window" not in phrase.lower():
+            continue
+
+        x1, y1, x2, y2 = decode_box(box.cpu().numpy(), height, width)
+        box_w = max(x2 - x1, 1)
+        box_h = max(y2 - y1, 1)
+        box_area = box_w * box_h
+        area_fraction = box_area / max(facade_area, 1)
+        aspect = box_h / max(box_w, 1)
+
+        if not (0.00008 <= area_fraction <= 0.045):
+            continue
+        if not (0.35 <= aspect <= 7.0):
+            continue
+
+        shrink_x = int(round(box_w * 0.08))
+        shrink_y = int(round(box_h * 0.08))
+        sx1 = min(max(0, x1 + shrink_x), width - 1)
+        sy1 = min(max(0, y1 + shrink_y), height - 1)
+        sx2 = min(max(sx1 + 1, x2 - shrink_x), width)
+        sy2 = min(max(sy1 + 1, y2 - shrink_y), height)
+
+        candidate = np.zeros((height, width), dtype=bool)
+        candidate[sy1:sy2, sx1:sx2] = True
+        candidate_area = int(candidate.sum())
+        if candidate_area == 0:
+            continue
+        if (candidate & facade_mask).sum() / candidate_area < 0.72:
+            continue
+        if (candidate & occupied).sum() / candidate_area > 0.20:
+            continue
+        if (candidate & seeded).sum() / candidate_area > 0.65:
+            continue
+
+        seeded |= candidate & facade_mask & ~occupied
+        added += 1
+
+    return seeded, added
+
+
 def _component_boxes_from_mask(mask, facade_mask):
     height, width = mask.shape
     facade_area = int(facade_mask.sum())
@@ -779,6 +844,14 @@ def segment_facade_components(
             door_mask |= mask[0]
 
     window_count = sum(1 for phrase in phrases if "window" in phrase.lower())
+    window_mask, dino_box_window_seeds_added = _add_dino_window_box_seeds(
+        window_mask,
+        boxes,
+        phrases,
+        facade_mask,
+        door_mask,
+        balcony_mask,
+    )
     window_mask, fallback_windows_added = _add_sam_window_fallback(
         auto_masks,
         facade_mask,
@@ -811,6 +884,7 @@ def segment_facade_components(
 
     quality = {
         "dino_window_count": window_count,
+        "dino_box_window_seeds_added": dino_box_window_seeds_added,
         "sam_fallback_windows_added": fallback_windows_added,
         "cv_fallback_windows_added": cv_windows_added,
         "grid_inferred_windows_added": grid_inferred_windows_added,

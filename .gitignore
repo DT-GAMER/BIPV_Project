@@ -13,6 +13,8 @@ checkpoints/
 weights/
 outputs/
 data/
+training/datasets/
+training/runs/
 
 *.pth
 *.pt

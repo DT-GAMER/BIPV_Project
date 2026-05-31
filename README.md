@@ -148,8 +148,9 @@ show_workflow_grid(results, column_titles=["Case 1", "Case 2", "Case 3"])
 ```
 
 The workflow grid is exported in a paper-style layout by default, with a left
-methodology column and fixed-size cells like the reference figure. It uses the
-same five rows:
+methodology column and fixed-size cells like the reference figure. The final
+row is an alignment overlay so you can verify whether excluded openings sit on
+the facade correctly. It uses the same five rows:
 
 ```text
 Facade Image
@@ -158,6 +159,9 @@ Obstacle Removal
 Facade Alignment
 Segmentation Result
 ```
+
+For a pure black/white paper-style mask, pass `segmentation_view="binary"` to
+`show_workflow_grid` or `save_workflow_grid_image`.
 
 The final outputs are:
 
@@ -196,6 +200,50 @@ You can locally check syntax without downloading or running the heavy models:
 ```bash
 python -m compileall src
 ```
+
+## Training A Facade Parser
+
+For calculation-grade facade/window segmentation, the long-term path is a
+trained facade parser. This repo includes a YOLO segmentation training scaffold:
+
+```text
+training/facade_parser_dataset.yaml
+scripts/train_facade_parser.py
+scripts/evaluate_facade_parser.py
+scripts/predict_facade_parser.py
+src/trained_facade_parser.py
+docs/facade_parser_training.md
+```
+
+Install training dependencies:
+
+```bash
+pip install -r requirements-training.txt
+```
+
+After annotating images in YOLO segmentation format, train with:
+
+```bash
+python scripts/train_facade_parser.py \
+  --data training/facade_parser_dataset.yaml \
+  --model yolo11s-seg.pt \
+  --epochs 100 \
+  --imgsz 1024
+```
+
+See `docs/facade_parser_training.md` for dataset layout, labeling rules, and
+evaluation guidance.
+
+When training in Colab, save the final best weights to:
+
+```text
+/content/drive/MyDrive/BIPV_Project/models/facade_parser.pt
+```
+
+The normal BIPV pipeline automatically looks for that file. If it exists, Stage
+7 uses the trained facade parser for facade, window/opening, door, and balcony
+segmentation. If it does not exist or the prediction fails quality checks, the
+pipeline falls back to Grounding DINO + SAM.
 
 ## Notes
 

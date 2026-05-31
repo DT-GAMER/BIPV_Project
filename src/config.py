@@ -76,6 +76,13 @@ class AnalysisConfig:
     max_obstacle_mask_fraction: float = 0.22
     exclude_obstacle_area_from_usable: bool = False
     obstacle_exclusion_dilate_kernel: int = 9
+    use_trained_facade_parser: bool = True
+    trained_facade_parser_path: str | None = None
+    trained_facade_parser_drive_path: str = (
+        "/content/drive/MyDrive/BIPV_Project/models/facade_parser.pt"
+    )
+    trained_facade_parser_conf: float = 0.25
+    trained_facade_parser_imgsz: int = 1024
     use_cv_window_fallback: bool = True
     cv_window_min_area_fraction: float = 0.00020
     cv_window_max_area_fraction: float = 0.02000

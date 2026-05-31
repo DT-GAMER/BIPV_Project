@@ -29,6 +29,7 @@ class TrainedFacadeParserResult:
     window_mask: np.ndarray
     door_mask: np.ndarray
     balcony_mask: np.ndarray
+    roof_edge_mask: np.ndarray
     obstacle_mask: np.ndarray
     quality: dict
 
@@ -68,6 +69,7 @@ def run_trained_facade_parser(
         "door": np.zeros((height, width), dtype=bool),
         "balcony": np.zeros((height, width), dtype=bool),
         "obstacle": np.zeros((height, width), dtype=bool),
+        "roof_edge": np.zeros((height, width), dtype=bool),
     }
     detections = []
 
@@ -87,6 +89,7 @@ def run_trained_facade_parser(
             window_mask=masks_by_class["window_opening"],
             door_mask=masks_by_class["door"],
             balcony_mask=masks_by_class["balcony"],
+            roof_edge_mask=masks_by_class["roof_edge"],
             obstacle_mask=masks_by_class["obstacle"],
             quality={"detections": 0, "status": "no-detections"},
         )
@@ -98,6 +101,7 @@ def run_trained_facade_parser(
             window_mask=masks_by_class["window_opening"],
             door_mask=masks_by_class["door"],
             balcony_mask=masks_by_class["balcony"],
+            roof_edge_mask=masks_by_class["roof_edge"],
             obstacle_mask=masks_by_class["obstacle"],
             quality={"detections": 0, "status": "no-masks"},
         )
@@ -128,6 +132,7 @@ def run_trained_facade_parser(
         window_mask=masks_by_class["window_opening"] & facade_mask,
         door_mask=masks_by_class["door"] & facade_mask,
         balcony_mask=masks_by_class["balcony"] & facade_mask,
+        roof_edge_mask=masks_by_class["roof_edge"] & facade_mask,
         obstacle_mask=masks_by_class["obstacle"],
         quality={
             "detections": len(detections),

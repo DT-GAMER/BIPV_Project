@@ -81,6 +81,7 @@ def make_segmentation_alignment_image(result):
     window_mask = segmentation["window_mask"]
     door_mask = segmentation["door_mask"]
     balcony_mask = segmentation["balcony_mask"]
+    roof_mask = segmentation.get("roof_mask", np.zeros_like(facade_mask, dtype=bool))
 
     overlay[facade_mask] = (
         0.78 * overlay[facade_mask].astype(np.float32)
@@ -91,7 +92,7 @@ def make_segmentation_alignment_image(result):
         + 0.32 * np.array([0, 190, 0], dtype=np.float32)
     ).astype(np.uint8)
     overlay[window_mask] = np.array([255, 0, 0], dtype=np.uint8)
-    overlay[door_mask | balcony_mask] = np.array([255, 160, 0], dtype=np.uint8)
+    overlay[door_mask | balcony_mask | roof_mask] = np.array([255, 160, 0], dtype=np.uint8)
     return overlay
 
 

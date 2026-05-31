@@ -176,6 +176,7 @@ def _segmentation_from_trained_parser(aligned_facade, config, device):
     window_mask = (parser_result.window_mask & facade_mask).astype(bool)
     door_mask = (parser_result.door_mask & facade_mask).astype(bool)
     balcony_mask = (parser_result.balcony_mask & facade_mask).astype(bool)
+    roof_mask = (parser_result.roof_edge_mask & facade_mask).astype(bool)
     facade_coverage = float(facade_mask.sum() / max(facade_mask.size, 1) * 100)
     window_boxes = _window_boxes_from_mask(window_mask, facade_mask)
     quality = {
@@ -197,6 +198,7 @@ def _segmentation_from_trained_parser(aligned_facade, config, device):
         "raw_window_mask": window_mask.copy(),
         "door_mask": door_mask,
         "balcony_mask": balcony_mask,
+        "roof_mask": roof_mask,
         "boxes": torch.empty((0, 4)),
         "logits": torch.empty((0,)),
         "phrases": [],
@@ -236,6 +238,7 @@ def _merge_trained_openings_into_segmentation(base_segmentation, trained_segment
         base_segmentation["balcony_mask"]
         | (trained_segmentation["balcony_mask"] & facade_mask)
     ).astype(bool)
+    roof_mask = (trained_segmentation.get("roof_mask", np.zeros_like(facade_mask)) & facade_mask).astype(bool)
 
     quality = dict(base_segmentation["quality"])
     quality.update(
@@ -245,6 +248,7 @@ def _merge_trained_openings_into_segmentation(base_segmentation, trained_segment
             "window_mask_source": window_source,
             "base_window_count": int(base_window_count),
             "trained_window_count": int(trained_window_count),
+            "trained_roof_edge_pixels": int(roof_mask.sum()),
             "trained_facade_parser_path": trained_segmentation["quality"].get(
                 "trained_facade_parser_path"
             ),
@@ -264,6 +268,7 @@ def _merge_trained_openings_into_segmentation(base_segmentation, trained_segment
             "raw_window_mask": window_mask.copy(),
             "door_mask": door_mask & facade_mask,
             "balcony_mask": balcony_mask & facade_mask,
+            "roof_mask": roof_mask,
             # Force downstream floor/scale extraction to use the final opening
             # mask rather than stale DINO boxes when trained openings are used.
             "boxes": torch.empty((0, 4)),
@@ -441,6 +446,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
             segmentation["raw_window_mask"] &= segmentation["facade_mask"]
         segmentation["door_mask"] &= segmentation["facade_mask"]
         segmentation["balcony_mask"] &= segmentation["facade_mask"]
+        if "roof_mask" in segmentation:
+            segmentation["roof_mask"] &= segmentation["facade_mask"]
     stages["segmentation"] = segmentation["quality"]
 
     window_boxes_np = np.array(
@@ -499,7 +506,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         segmentation["facade_mask"],
         segmentation["window_mask"],
         segmentation["door_mask"],
-        segmentation["balcony_mask"],
+        segmentation["balcony_mask"] | segmentation.get("roof_mask", np.zeros_like(segmentation["facade_mask"])),
         shadow_mask=shadow_analysis["shadow_mask"],
         obstacle_mask=obstacle_mask_for_area,
         obstacle_exclusion_dilate_kernel=config.obstacle_exclusion_dilate_kernel,
@@ -508,7 +515,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         segmentation["facade_mask"],
         segmentation["window_mask"],
         segmentation["door_mask"],
-        segmentation["balcony_mask"],
+        segmentation["balcony_mask"] | segmentation.get("roof_mask", np.zeros_like(segmentation["facade_mask"])),
         shadow_analysis["shadow_mask"],
         dimensions,
         obstacle_mask=obstacle_mask_for_area,

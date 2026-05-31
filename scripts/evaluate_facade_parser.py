@@ -16,6 +16,29 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_weights(path: str) -> Path:
+    """Resolve expected or Ultralytics-nested best.pt paths."""
+
+    requested = Path(path)
+    if requested.exists():
+        return requested
+
+    candidates = [
+        Path("runs/segment") / requested,
+        Path("training/runs/facade_parser_yolo/weights/best.pt"),
+        Path("runs/segment/training/runs/facade_parser_yolo/weights/best.pt"),
+    ]
+    candidates.extend(Path(".").glob("**/facade_parser_yolo/weights/best.pt"))
+    existing = [candidate for candidate in candidates if candidate.exists()]
+    if existing:
+        return max(existing, key=lambda candidate: candidate.stat().st_mtime)
+
+    raise FileNotFoundError(
+        f"Weights not found: {requested}. Expected best.pt under "
+        "training/runs/facade_parser_yolo/weights/ or runs/segment/..."
+    )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -27,9 +50,8 @@ def main() -> None:
             "`pip install -r requirements-training.txt`."
         ) from exc
 
-    weights = Path(args.weights)
-    if not weights.exists():
-        raise FileNotFoundError(f"Weights not found: {weights}")
+    weights = resolve_weights(args.weights)
+    print(f"Using weights: {weights}")
 
     model = YOLO(str(weights))
     metrics = model.val(

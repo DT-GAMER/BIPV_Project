@@ -45,12 +45,13 @@ def main() -> None:
         raise FileNotFoundError(f"Dataset config not found: {data_path}")
 
     model = YOLO(args.model)
+    project_path = Path(args.project).resolve()
     model.train(
         data=str(data_path),
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
-        project=args.project,
+        project=str(project_path),
         name=args.name,
         device=args.device,
         patience=args.patience,

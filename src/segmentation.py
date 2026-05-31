@@ -19,6 +19,20 @@ def project_bbox_through_warp(xmin, ymin, xmax, ymax, matrix, height: int, width
     return int(x_vals.min()), int(y_vals.min()), int(x_vals.max()), int(y_vals.max())
 
 
+def _clip_int_box(x1, y1, x2, y2, height: int, width: int):
+    """Clamp a pixel box to image bounds and return integer slice limits."""
+
+    ix1 = int(np.floor(x1))
+    iy1 = int(np.floor(y1))
+    ix2 = int(np.ceil(x2))
+    iy2 = int(np.ceil(y2))
+    ix1 = max(0, min(ix1, width - 1))
+    iy1 = max(0, min(iy1, height - 1))
+    ix2 = max(ix1 + 1, min(ix2, width))
+    iy2 = max(iy1 + 1, min(iy2, height))
+    return ix1, iy1, ix2, iy2
+
+
 def boxes_to_xyxy(boxes_normalized, height: int, width: int):
     cx = boxes_normalized[:, 0] * width
     cy = boxes_normalized[:, 1] * height
@@ -232,10 +246,14 @@ def _add_dino_window_box_seeds(
 
         shrink_x = int(round(box_w * 0.08))
         shrink_y = int(round(box_h * 0.08))
-        sx1 = min(max(0, x1 + shrink_x), width - 1)
-        sy1 = min(max(0, y1 + shrink_y), height - 1)
-        sx2 = min(max(sx1 + 1, x2 - shrink_x), width)
-        sy2 = min(max(sy1 + 1, y2 - shrink_y), height)
+        sx1, sy1, sx2, sy2 = _clip_int_box(
+            x1 + shrink_x,
+            y1 + shrink_y,
+            x2 - shrink_x,
+            y2 - shrink_y,
+            height,
+            width,
+        )
 
         candidate = np.zeros((height, width), dtype=bool)
         candidate[sy1:sy2, sx1:sx2] = True
@@ -769,8 +787,14 @@ def segment_facade_components(
         bx1, by1, bx2, by2 = 0, 0, width - 1, height - 1
 
     slack_x, slack_y = int(width * 0.05), int(height * 0.05)
-    bx1, by1 = max(0, bx1 - slack_x), max(0, by1 - slack_y)
-    bx2, by2 = min(width - 1, bx2 + slack_x), min(height - 1, by2 + slack_y)
+    bx1, by1, bx2, by2 = _clip_int_box(
+        bx1 - slack_x,
+        by1 - slack_y,
+        bx2 + slack_x,
+        by2 + slack_y,
+        height,
+        width,
+    )
 
     building_bbox_mask = np.zeros((height, width), dtype=bool)
     building_bbox_mask[by1:by2, bx1:bx2] = True

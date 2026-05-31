@@ -167,16 +167,12 @@ def _segmentation_from_trained_parser(aligned_facade, config, device):
             "weights_path": str(weights_path),
         }
 
-    if parser_result.quality.get("status") != "ok" or parser_result.facade_mask.sum() == 0:
-        return None, {
-            **parser_result.quality,
-            "enabled": True,
-            "status": "fallback",
-            "reason": "trained-parser-did-not-return-usable-facade-mask",
-            "weights_path": str(weights_path),
-        }
-
     facade_mask = parser_result.facade_mask.astype(bool)
+    if facade_mask.sum() == 0:
+        # A small first dataset may learn windows before it learns the full
+        # facade wall. Keep the opening masks available so the main pipeline can
+        # clip them to the stronger DINO/SAM facade geometry mask.
+        facade_mask = np.ones(parser_result.window_mask.shape, dtype=bool)
     window_mask = (parser_result.window_mask & facade_mask).astype(bool)
     door_mask = (parser_result.door_mask & facade_mask).astype(bool)
     balcony_mask = (parser_result.balcony_mask & facade_mask).astype(bool)
@@ -211,6 +207,72 @@ def _segmentation_from_trained_parser(aligned_facade, config, device):
         "status": "used",
         "weights_path": str(weights_path),
     }
+
+
+def _merge_trained_openings_into_segmentation(base_segmentation, trained_segmentation):
+    """Use the trained parser for openings while preserving base facade geometry."""
+
+    merged = dict(base_segmentation)
+    facade_mask = base_segmentation["facade_mask"].astype(bool)
+    base_window_mask = (base_segmentation["window_mask"] & facade_mask).astype(bool)
+    trained_window_mask = (trained_segmentation["window_mask"] & facade_mask).astype(bool)
+
+    base_window_count = len(_window_boxes_from_mask(base_window_mask, facade_mask))
+    trained_window_count = len(_window_boxes_from_mask(trained_window_mask, facade_mask))
+    use_trained_windows = trained_window_count >= max(4, int(base_window_count * 0.45))
+
+    if use_trained_windows:
+        window_mask = trained_window_mask
+        window_source = "trained_facade_parser"
+    else:
+        window_mask = base_window_mask
+        window_source = "dino_sam_fallback"
+
+    door_mask = (
+        base_segmentation["door_mask"]
+        | (trained_segmentation["door_mask"] & facade_mask)
+    ).astype(bool)
+    balcony_mask = (
+        base_segmentation["balcony_mask"]
+        | (trained_segmentation["balcony_mask"] & facade_mask)
+    ).astype(bool)
+
+    quality = dict(base_segmentation["quality"])
+    quality.update(
+        {
+            "parser_source": "hybrid_dino_sam_facade_trained_openings",
+            "trained_openings_applied": bool(use_trained_windows),
+            "window_mask_source": window_source,
+            "base_window_count": int(base_window_count),
+            "trained_window_count": int(trained_window_count),
+            "trained_facade_parser_path": trained_segmentation["quality"].get(
+                "trained_facade_parser_path"
+            ),
+        }
+    )
+    if use_trained_windows:
+        quality["measurement_quality"] = _measurement_quality_from_trained_parser(
+            {"status": "ok"},
+            facade_mask,
+            window_mask,
+        )
+
+    merged.update(
+        {
+            "facade_mask": facade_mask,
+            "window_mask": window_mask,
+            "raw_window_mask": window_mask.copy(),
+            "door_mask": door_mask & facade_mask,
+            "balcony_mask": balcony_mask & facade_mask,
+            # Force downstream floor/scale extraction to use the final opening
+            # mask rather than stale DINO boxes when trained openings are used.
+            "boxes": torch.empty((0, 4)),
+            "logits": torch.empty((0,)),
+            "phrases": [],
+            "quality": quality,
+        }
+    )
+    return merged
 
 
 def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwargs):
@@ -342,27 +404,36 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     reconstructed_mask = warp_mask(robust_mask, transform_matrix, aligned_facade.shape)
 
     print("Stage 7/8 - Facade element segmentation and alignment")
-    segmentation, trained_parser_stage = _segmentation_from_trained_parser(
+    segmentation = segment_facade_components(
+        aligned_facade,
+        models["mask_generator"],
+        models["predictor"],
+        models["dino_model"],
+        device,
+        (bx1, by1, bx2, by2),
+        transform_matrix,
+        min_window_detections=config.min_window_detections,
+        use_cv_window_fallback=config.use_cv_window_fallback,
+        cv_window_min_area_fraction=config.cv_window_min_area_fraction,
+        cv_window_max_area_fraction=config.cv_window_max_area_fraction,
+        reconstructed_mask=reconstructed_mask,
+    )
+    trained_segmentation, trained_parser_stage = _segmentation_from_trained_parser(
         aligned_facade,
         config,
         device,
     )
-    stages["trained_facade_parser"] = trained_parser_stage
-    if segmentation is None:
-        segmentation = segment_facade_components(
-            aligned_facade,
-            models["mask_generator"],
-            models["predictor"],
-            models["dino_model"],
-            device,
-            (bx1, by1, bx2, by2),
-            transform_matrix,
-            min_window_detections=config.min_window_detections,
-            use_cv_window_fallback=config.use_cv_window_fallback,
-            cv_window_min_area_fraction=config.cv_window_min_area_fraction,
-            cv_window_max_area_fraction=config.cv_window_max_area_fraction,
-            reconstructed_mask=reconstructed_mask,
+    if trained_segmentation is not None:
+        segmentation = _merge_trained_openings_into_segmentation(
+            segmentation,
+            trained_segmentation,
         )
+        trained_parser_stage = {
+            **trained_parser_stage,
+            "status": "used-for-openings",
+            "integration": "base-facade-mask-plus-trained-openings",
+        }
+    stages["trained_facade_parser"] = trained_parser_stage
     if rectified_content_mask is not None:
         segmentation["facade_mask"] &= rectified_content_mask
         segmentation["window_mask"] &= segmentation["facade_mask"]

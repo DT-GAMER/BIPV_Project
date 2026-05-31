@@ -127,7 +127,7 @@ def _draw_method_cell(axis, row, stage_name):
         1: "Grounding\nDINO",
         2: "SAM +\nInpainting",
         3: "Perspective\nTransform",
-        4: "Grounding\nDINO + SAM",
+        4: "Facade\nParser",
     }
     icon_by_row = {
         0: "Facade\nImage",

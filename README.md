@@ -240,10 +240,9 @@ When training in Colab, save the final best weights to:
 /content/drive/MyDrive/BIPV_Project/models/facade_parser.pt
 ```
 
-The normal BIPV pipeline automatically looks for that file. If it exists, Stage
-7 uses the trained facade parser for facade, window/opening, door, and balcony
-segmentation. If it does not exist or the prediction fails quality checks, the
-pipeline falls back to Grounding DINO + SAM.
+The trained parser is currently disabled by default. The normal BIPV pipeline
+uses Grounding DINO + SAM + CV/window-grid fallbacks. To experiment with the
+trained parser later, set `use_trained_facade_parser=True` in `AnalysisConfig`.
 
 ## Notes
 

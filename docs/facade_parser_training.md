@@ -150,8 +150,10 @@ After training in Colab, save the best weights to Google Drive:
 /content/drive/MyDrive/BIPV_Project/models/facade_parser.pt
 ```
 
-The normal analysis pipeline now checks for trained weights automatically in
-this order:
+The trained parser is currently disabled by default while the main workflow
+uses Grounding DINO + SAM + CV/window-grid fallbacks. If you explicitly enable
+`use_trained_facade_parser=True`, the analysis pipeline checks for trained
+weights in this order:
 
 ```text
 1. AnalysisConfig.trained_facade_parser_path, if you set it manually
@@ -159,9 +161,9 @@ this order:
 3. /content/drive/MyDrive/BIPV_Project/models/facade_parser.pt
 ```
 
-If a trained model is found, Stage 7 uses it for facade, window/opening, door,
-and balcony masks. If the file is missing or the prediction is not usable, the
-pipeline falls back to the Grounding DINO + SAM parser.
+If a trained model is found and enabled, Stage 7 can use it for opening masks.
+If the file is missing or the prediction is not usable, the pipeline falls back
+to the Grounding DINO + SAM parser.
 
 Manual test integration:
 
@@ -171,8 +173,7 @@ from src.trained_facade_parser import run_trained_facade_parser
 result = run_trained_facade_parser(image_rgb, "models/facade_parser.pt")
 ```
 
-Normal pipeline usage does not need an extra argument once the Drive weights
-exist:
+Normal default pipeline usage does not use the trained parser:
 
 ```python
 from src.config import automatic_config
@@ -182,7 +183,7 @@ config = automatic_config(image_path=IMAGE_PATH, output_path=OUTPUT_PATH)
 result = run_bipv_analysis(config)
 ```
 
-To force a custom weights path:
+To enable the trained parser experiment with a custom weights path:
 
 ```python
 import dataclasses
@@ -190,6 +191,7 @@ import dataclasses
 config = automatic_config(image_path=IMAGE_PATH, output_path=OUTPUT_PATH)
 config = dataclasses.replace(
     config,
+    use_trained_facade_parser=True,
     trained_facade_parser_path="/content/drive/MyDrive/BIPV_Project/models/facade_parser.pt",
 )
 ```

@@ -76,7 +76,7 @@ class AnalysisConfig:
     max_obstacle_mask_fraction: float = 0.22
     exclude_obstacle_area_from_usable: bool = False
     obstacle_exclusion_dilate_kernel: int = 9
-    use_trained_facade_parser: bool = True
+    use_trained_facade_parser: bool = False
     trained_facade_parser_path: str | None = None
     trained_facade_parser_drive_path: str = (
         "/content/drive/MyDrive/BIPV_Project/models/facade_parser.pt"

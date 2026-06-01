@@ -36,6 +36,7 @@ from .preprocessing import load_and_preprocess_image
 from .scaling import estimate_real_world_scale
 from .segmentation import segment_facade_components
 from .trained_facade_parser import run_trained_facade_parser
+from .utils import dilate_mask
 
 
 def _disabled_shadow_analysis(facade_mask):
@@ -280,6 +281,76 @@ def _merge_trained_openings_into_segmentation(base_segmentation, trained_segment
     return merged
 
 
+def _remove_mask_components(mask, remove_region=None, top_fraction: float | None = None):
+    """Remove implausible exclusion components from a binary mask."""
+
+    if mask.sum() == 0:
+        return mask
+
+    height, width = mask.shape[:2]
+    cleaned = mask.copy()
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8),
+        connectivity=8,
+    )
+
+    for label_id in range(1, num_labels):
+        x, y, w, h, area = stats[label_id]
+        component = labels == label_id
+        remove = False
+        if remove_region is not None:
+            overlap = int((component & remove_region).sum()) / max(int(area), 1)
+            remove = overlap > 0.12
+        if top_fraction is not None and y <= int(height * top_fraction):
+            # Top-edge door/balcony detections are usually roof/parapet false
+            # positives in this workflow, not usable-area exclusions.
+            remove = True
+        if remove:
+            cleaned[component] = False
+
+    return cleaned
+
+
+def _clean_architectural_exclusions(segmentation, reconstructed_mask, config):
+    """Reduce false orange exclusions caused by inpainted obstacle regions."""
+
+    facade_mask = segmentation["facade_mask"]
+    cleanup_region = None
+    if config.suppress_architecture_on_reconstructed_regions and reconstructed_mask is not None:
+        cleanup_region = dilate_mask(
+            reconstructed_mask & facade_mask,
+            kernel_size=11,
+            iterations=1,
+        )
+
+    segmentation["door_mask"] = _remove_mask_components(
+        segmentation["door_mask"] & facade_mask,
+        remove_region=cleanup_region,
+        top_fraction=0.45,
+    )
+    segmentation["balcony_mask"] = _remove_mask_components(
+        segmentation["balcony_mask"] & facade_mask,
+        remove_region=cleanup_region,
+        top_fraction=0.06,
+    )
+    if "roof_mask" in segmentation:
+        segmentation["roof_mask"] = _remove_mask_components(
+            segmentation["roof_mask"] & facade_mask,
+            remove_region=cleanup_region,
+            top_fraction=None,
+        )
+
+    quality = dict(segmentation.get("quality", {}))
+    quality["architectural_exclusion_cleanup"] = {
+        "reconstructed_region_suppression": bool(cleanup_region is not None),
+        "door_pixels_after_cleanup": int(segmentation["door_mask"].sum()),
+        "balcony_pixels_after_cleanup": int(segmentation["balcony_mask"].sum()),
+        "roof_pixels_after_cleanup": int(segmentation.get("roof_mask", np.zeros_like(facade_mask)).sum()),
+    }
+    segmentation["quality"] = quality
+    return segmentation
+
+
 def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwargs):
     """Run the full BIPV analysis.
 
@@ -448,6 +519,11 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         segmentation["balcony_mask"] &= segmentation["facade_mask"]
         if "roof_mask" in segmentation:
             segmentation["roof_mask"] &= segmentation["facade_mask"]
+    segmentation = _clean_architectural_exclusions(
+        segmentation,
+        reconstructed_mask,
+        config,
+    )
     stages["segmentation"] = segmentation["quality"]
 
     window_boxes_np = np.array(

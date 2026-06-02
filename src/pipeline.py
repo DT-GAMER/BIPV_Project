@@ -351,6 +351,40 @@ def _clean_architectural_exclusions(segmentation, reconstructed_mask, config):
     return segmentation
 
 
+def _postprocess_facade_mask(segmentation: dict, aligned_facade: np.ndarray) -> dict:
+    """Remove sky pixels and smooth facade mask edges after segmentation."""
+
+    facade_mask = segmentation["facade_mask"].astype(np.uint8)
+    height = facade_mask.shape[0]
+
+    # Sky exclusion: only search the top 55% of the image where sky actually is.
+    hsv = cv2.cvtColor(aligned_facade, cv2.COLOR_RGB2HSV)
+    sky_zone = np.zeros(facade_mask.shape, dtype=bool)
+    sky_zone[: int(height * 0.55), :] = True
+    blue_sky = (
+        (hsv[:, :, 0] >= 88) & (hsv[:, :, 0] <= 138)
+        & (hsv[:, :, 1] >= 45)
+        & (hsv[:, :, 2] >= 90)
+    )
+    overcast_sky = (hsv[:, :, 1] < 28) & (hsv[:, :, 2] >= 210)
+    sky_pixels = (blue_sky | overcast_sky) & sky_zone
+    facade_mask = (facade_mask.astype(bool) & ~sky_pixels).astype(np.uint8)
+
+    # Morphological closing: fills small holes and rounds jagged SAM boundaries
+    # without significantly expanding the mask footprint.
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    facade_mask = cv2.morphologyEx(facade_mask, cv2.MORPH_CLOSE, kernel)
+    facade_clean = facade_mask.astype(bool)
+
+    # Re-clip all derived masks to the cleaned facade boundary.
+    segmentation["facade_mask"] = facade_clean
+    for key in ("window_mask", "raw_window_mask", "door_mask", "balcony_mask", "roof_mask"):
+        if key in segmentation:
+            segmentation[key] = segmentation[key] & facade_clean
+
+    return segmentation
+
+
 def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwargs):
     """Run the full BIPV analysis.
 
@@ -526,6 +560,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         reconstructed_mask,
         config,
     )
+    segmentation = _postprocess_facade_mask(segmentation, aligned_facade)
     stages["segmentation"] = segmentation["quality"]
 
     window_boxes_np = np.array(

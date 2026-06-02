@@ -163,7 +163,15 @@ def _add_cv_window_fallback(
     saturation = hsv[:, :, 1]
     value = hsv[:, :, 2]
 
-    glass_like = ((saturation < 85) & (value > 80) & (value < 245)) | (gray < 75)
+    # Adaptive dark-window threshold: windows are darker than the facade median.
+    # A fixed value of 75 misses windows on dark-stone buildings where the facade
+    # median is 90-110 and windows sit at 40-70.
+    if facade_mask.sum() > 0:
+        facade_median_gray = float(np.median(gray[facade_mask]))
+        dark_threshold = int(np.clip(facade_median_gray * 0.70, 35, 105))
+    else:
+        dark_threshold = 75
+    glass_like = ((saturation < 85) & (value > 80) & (value < 245)) | (gray < dark_threshold)
     glass_like &= facade_mask
     glass_like &= ~(door_mask | balcony_mask | existing_window_mask)
 

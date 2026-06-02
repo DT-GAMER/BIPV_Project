@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import random
 from pathlib import Path
 
 import cv2
@@ -351,6 +352,18 @@ def _clean_architectural_exclusions(segmentation, reconstructed_mask, config):
     return segmentation
 
 
+def _set_random_seeds(seed: int) -> None:
+    """Lock all RNGs so SAM point-sampling and CUDA ops give the same result every run."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def _postprocess_facade_mask(segmentation: dict, aligned_facade: np.ndarray) -> dict:
     """Remove sky pixels and smooth facade mask edges after segmentation."""
 
@@ -393,6 +406,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     """
 
     config = config or AnalysisConfig(**kwargs)
+    _set_random_seeds(config.random_seed)
     owns_models = models is None
     models = models or load_models(load_stable_diffusion=config.run_stable_diffusion)
     device = models["device"]

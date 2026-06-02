@@ -89,6 +89,7 @@ class AnalysisConfig:
     cv_window_max_area_fraction: float = 0.02000
     dino_box_threshold: float = 0.25
     dino_text_threshold: float = 0.20
+    random_seed: int = 42
 
 
 def automatic_config(

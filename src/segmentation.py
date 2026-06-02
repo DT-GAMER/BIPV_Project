@@ -90,6 +90,7 @@ def _add_sam_window_fallback(
     balcony_mask,
     min_window_detections: int,
     current_window_count: int,
+    reconstructed_mask=None,
 ):
     """Add conservative SAM-derived window candidates when DINO misses windows."""
 
@@ -121,6 +122,13 @@ def _add_sam_window_fallback(
         if (segment & occupied).sum() / max(area, 1) > 0.25:
             continue
 
+        # Reject segments that mostly sit inside an inpainted region —
+        # LaMa artificial texture produces blob shapes that look window-like.
+        if reconstructed_mask is not None:
+            reconstructed_overlap = (segment & reconstructed_mask).sum() / max(area, 1)
+            if reconstructed_overlap > 0.40:
+                continue
+
         ys, xs = np.where(segment)
         if len(xs) == 0:
             continue
@@ -130,7 +138,6 @@ def _add_sam_window_fallback(
         aspect = bbox_h / max(bbox_w, 1)
         fill_ratio = area / max(bbox_w * bbox_h, 1)
 
-        # Windows can vary, but extreme slivers and very sparse blobs are risky.
         if not (0.45 <= aspect <= 3.50):
             continue
         if fill_ratio < 0.25:
@@ -150,6 +157,7 @@ def _add_cv_window_fallback(
     balcony_mask,
     min_area_fraction: float = 0.00020,
     max_area_fraction: float = 0.02000,
+    reconstructed_mask=None,
 ):
     """Detect glass-like rectangular window candidates missed by DINO/SAM."""
 
@@ -173,6 +181,10 @@ def _add_cv_window_fallback(
         dark_threshold = 75
     glass_like = ((saturation < 85) & (value > 80) & (value < 245)) | (gray < dark_threshold)
     glass_like &= facade_mask
+    # Exclude inpainted regions — LaMa fill creates low-saturation blurry areas
+    # that look glass-like to the colour detector but are not real windows.
+    if reconstructed_mask is not None:
+        glass_like &= ~reconstructed_mask
     glass_like &= ~(door_mask | balcony_mask | existing_window_mask)
 
     close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))
@@ -1063,6 +1075,7 @@ def segment_facade_components(
         balcony_mask,
         min_window_detections,
         window_count,
+        reconstructed_mask=reconstructed_mask,
     )
     cv_windows_added = 0
     if use_cv_window_fallback:
@@ -1074,6 +1087,7 @@ def segment_facade_components(
             balcony_mask,
             min_area_fraction=cv_window_min_area_fraction,
             max_area_fraction=cv_window_max_area_fraction,
+            reconstructed_mask=reconstructed_mask,
         )
     raw_window_mask = window_mask.copy()
     window_mask, grid_quality = _regularize_window_grid(

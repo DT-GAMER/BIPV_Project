@@ -377,6 +377,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         models["dino_model"],
         device,
         facade_roi_bottom=config.facade_roi_bottom,
+        box_threshold=config.dino_box_threshold,
+        text_threshold=config.dino_text_threshold,
     )
     height, width = image_rgb.shape[:2]
     bx1, by1, bx2, by2, keep_boxes, facade_selection_quality = building_bbox_from_boxes(

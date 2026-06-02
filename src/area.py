@@ -20,6 +20,11 @@ def count_floors_from_windows(window_boxes_np, min_floor_gap: float = 0.06) -> i
     centers_y = np.sort(window_boxes_np[:, 1])
     if len(centers_y) < 2:
         return len(centers_y) if len(centers_y) > 0 else 5
+    # Use an adaptive gap based on median window height when height data is present.
+    # A fixed gap of 0.06 works poorly when windows are unusually large or small.
+    if window_boxes_np.ndim == 2 and window_boxes_np.shape[1] >= 4:
+        median_h = float(np.median(window_boxes_np[:, 3]))
+        min_floor_gap = float(np.clip(median_h * 1.15, 0.04, 0.10))
     gaps = np.diff(centers_y)
     return int(np.clip(int(np.sum(gaps > min_floor_gap)) + 1, 2, 20))
 

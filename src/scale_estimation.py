@@ -140,8 +140,24 @@ def _count_floors(
     if not candidates:
         return 5, "default-floor-count", {"default": 5}
 
-    source, floors = max(candidates.items(), key=lambda item: item[1])
-    return int(np.clip(floors, 2, 20)), source, candidates
+    # Limit facade-extent extrapolation to +1 floor over the direct band count to
+    # avoid doubling up with the max-selection bias that existed before this fix.
+    if "segmented_window_mask" in candidates and "segmented_window_mask_with_facade_extent" in candidates:
+        candidates["segmented_window_mask_with_facade_extent"] = min(
+            candidates["segmented_window_mask_with_facade_extent"],
+            candidates["segmented_window_mask"] + 1,
+        )
+
+    values = sorted(candidates.values())
+    n = len(values)
+    if n % 2 == 1:
+        median_floors = values[n // 2]
+    else:
+        median_floors = int(round((values[n // 2 - 1] + values[n // 2]) / 2.0))
+    median_floors = int(np.clip(median_floors, 2, 20))
+
+    source = min(candidates, key=lambda k: abs(candidates[k] - median_floors))
+    return median_floors, source, candidates
 
 
 def _estimate_floor_height_m(window_boxes_np, default_floor_height_m: float) -> tuple[float, str]:

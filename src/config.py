@@ -87,6 +87,8 @@ class AnalysisConfig:
     use_cv_window_fallback: bool = True
     cv_window_min_area_fraction: float = 0.00020
     cv_window_max_area_fraction: float = 0.02000
+    dino_box_threshold: float = 0.25
+    dino_text_threshold: float = 0.20
 
 
 def automatic_config(

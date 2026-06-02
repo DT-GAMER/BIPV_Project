@@ -741,6 +741,174 @@ def segmentation_measurement_quality(quality):
     }
 
 
+def _clean_facade_boundary(facade_mask: np.ndarray) -> np.ndarray:
+    """Replace a jagged SAM facade outline with a smooth, hole-free polygon.
+
+    Drops tiny disconnected fragments (< 20% of the largest component), then
+    applies a strong morphological close to fill all interior holes. This gives
+    a solid, presentation-quality facade shape without a convex-hull that would
+    incorrectly bridge irregular rooflines or building recesses.
+    """
+    uint = facade_mask.astype(np.uint8)
+
+    # Drop small disconnected SAM fragments — keep any component ≥ 20% of largest
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(uint, connectivity=8)
+    if num_labels > 1:
+        areas = stats[1:, cv2.CC_STAT_AREA].astype(float)
+        max_area = float(areas.max())
+        keep = [1 + i for i, a in enumerate(areas) if a >= max_area * 0.20]
+        uint = np.isin(labels, keep).astype(np.uint8)
+
+    if uint.sum() == 0:
+        return facade_mask
+
+    height, width = uint.shape
+    # Strong close fills all interior holes (chimneys, sky pockets, etc.)
+    k = max(21, int(min(height, width) * 0.055))
+    k = k if k % 2 == 1 else k + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    uint = cv2.morphologyEx(uint, cv2.MORPH_CLOSE, kernel)
+
+    # Safety: if closing shrank the mask below 50% of original, return original
+    result = uint.astype(bool)
+    if result.sum() < facade_mask.sum() * 0.50:
+        return facade_mask
+    return result
+
+
+def _build_uniform_window_grid(
+    window_mask: np.ndarray,
+    facade_mask: np.ndarray,
+    door_mask: np.ndarray,
+    balcony_mask: np.ndarray,
+) -> tuple[np.ndarray, dict]:
+    """Produce a publication-quality window mask: uniform rectangles on a clean grid.
+
+    All windows are drawn at exactly the median detected size so the result
+    looks like an architectural schematic rather than a noisy pixel mask.
+    Only grid positions with real detection support are filled — no hallucinated
+    completions. Falls back to the input mask if a coherent grid cannot be built.
+    """
+    height, width = window_mask.shape
+    facade_area = int(facade_mask.sum())
+    if facade_area == 0 or window_mask.sum() == 0:
+        return window_mask, {"uniform_grid": False, "reason": "empty-input"}
+
+    min_area = max(20, int(facade_area * 0.00010))
+    max_area = max(min_area + 1, int(facade_area * 0.035))
+
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+        window_mask.astype(np.uint8), connectivity=8
+    )
+    components = []
+    for lbl in range(1, num_labels):
+        x, y, w, h, area = stats[lbl]
+        if not (min_area <= area <= max_area):
+            continue
+        if w < 4 or h < 6:
+            continue
+        if not (0.25 <= h / max(w, 1) <= 7.0):
+            continue
+        cx, cy = float(centroids[lbl][0]), float(centroids[lbl][1])
+        if not facade_mask[int(np.clip(cy, 0, height - 1)), int(np.clip(cx, 0, width - 1))]:
+            continue
+        components.append({"cx": cx, "cy": cy, "w": int(w), "h": int(h)})
+
+    if len(components) < 4:
+        return window_mask, {"uniform_grid": False, "reason": "too-few-components"}
+
+    # Compute robust median size, excluding obvious outliers
+    raw_mw = float(np.median([c["w"] for c in components]))
+    raw_mh = float(np.median([c["h"] for c in components]))
+    valid = [c for c in components
+             if 0.35 * raw_mw <= c["w"] <= 2.2 * raw_mw
+             and 0.35 * raw_mh <= c["h"] <= 2.2 * raw_mh]
+    if len(valid) < 4:
+        valid = components
+
+    uni_w = int(np.clip(round(np.median([c["w"] for c in valid])), 5, width // 3))
+    uni_h = int(np.clip(round(np.median([c["h"] for c in valid])), 7, height // 2))
+
+    # Cluster centres into rows and columns with adaptive tolerance
+    row_tol = max(8.0, uni_h * 0.75)
+    col_tol = max(8.0, uni_w * 0.75)
+    row_centers = _cluster_positions([c["cy"] for c in valid], row_tol)
+    col_centers = _cluster_positions([c["cx"] for c in valid], col_tol)
+
+    if not row_centers or not col_centers:
+        return window_mask, {"uniform_grid": False, "reason": "clustering-failed"}
+
+    # Mark which (row, col) grid cells have actual detection support
+    occupied = set()
+    for comp in valid:
+        r = int(np.argmin([abs(comp["cy"] - rc) for rc in row_centers]))
+        c = int(np.argmin([abs(comp["cx"] - cc) for cc in col_centers]))
+        if (abs(comp["cy"] - row_centers[r]) < row_tol * 1.3
+                and abs(comp["cx"] - col_centers[c]) < col_tol * 1.3):
+            occupied.add((r, c))
+
+    if len(occupied) < 4:
+        return window_mask, {"uniform_grid": False, "reason": "sparse-grid"}
+
+    # Filter cells whose row or column has very sparse support (noise rejection)
+    row_sup = {}
+    col_sup = {}
+    for r, c in occupied:
+        row_sup[r] = row_sup.get(r, 0) + 1
+        col_sup[c] = col_sup.get(c, 0) + 1
+    max_row = max(row_sup.values())
+    max_col = max(col_sup.values())
+    confirmed = {
+        (r, c) for r, c in occupied
+        if row_sup.get(r, 0) >= max(1, max_row * 0.20)
+        and col_sup.get(c, 0) >= max(1, max_col * 0.20)
+    }
+    if len(confirmed) < 4:
+        confirmed = occupied
+
+    # Draw uniform rectangles at every confirmed grid position
+    blocked = door_mask | balcony_mask
+    uniform = np.zeros((height, width), dtype=bool)
+    drawn = 0
+    for r, c in confirmed:
+        cy_px, cx_px = row_centers[r], col_centers[c]
+        x1 = max(0, int(round(cx_px - uni_w / 2)))
+        y1 = max(0, int(round(cy_px - uni_h / 2)))
+        x2 = min(width, int(round(cx_px + uni_w / 2)))
+        y2 = min(height, int(round(cy_px + uni_h / 2)))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        cell = np.zeros((height, width), dtype=bool)
+        cell[y1:y2, x1:x2] = True
+        if (cell & facade_mask).sum() / max(cell.sum(), 1) < 0.55:
+            continue
+        if (cell & blocked).sum() / max(cell.sum(), 1) > 0.25:
+            continue
+        uniform |= cell
+        drawn += 1
+
+    if drawn < 4:
+        return window_mask, {"uniform_grid": False, "reason": f"only-{drawn}-drawn"}
+
+    # Sanity ratio check: don't replace a good raw mask with something wildly different
+    raw_px = int(window_mask.sum())
+    uni_px = int(uniform.sum())
+    if raw_px > 0:
+        ratio = uni_px / raw_px
+        if ratio < 0.18 or ratio > 4.5:
+            return window_mask, {"uniform_grid": False, "reason": f"ratio-{ratio:.2f}"}
+
+    return (uniform & facade_mask & ~blocked), {
+        "uniform_grid": True,
+        "grid_rows": len(row_centers),
+        "grid_cols": len(col_centers),
+        "confirmed_cells": len(confirmed),
+        "windows_drawn": drawn,
+        "window_w_px": uni_w,
+        "window_h_px": uni_h,
+    }
+
+
 def _is_plausible_facade_candidate(candidate, building_bbox_mask):
     bbox_area = int(building_bbox_mask.sum())
     candidate_area = int(candidate.sum())
@@ -818,6 +986,9 @@ def segment_facade_components(
             break
     if facade_mask is None:
         facade_mask = building_bbox_mask.copy()
+
+    # Clean the SAM facade boundary before any window operations depend on it
+    facade_mask = _clean_facade_boundary(facade_mask)
 
     boxes_raw, logits_raw, phrases_raw = detect_facade_elements(aligned_facade, dino_model, device)
     kept = apply_nms_per_class(boxes_raw, logits_raw, phrases_raw, height, width)
@@ -914,6 +1085,12 @@ def segment_facade_components(
     )
     grid_inferred_windows_added = grid_quality["regularized_inferred_windows"]
 
+    # Final pass: replace scattered/irregular blobs with uniform rectangles.
+    # This is the step that produces publication-quality aligned window grids.
+    window_mask, uniform_quality = _build_uniform_window_grid(
+        window_mask, facade_mask, door_mask, balcony_mask
+    )
+
     quality = {
         "dino_window_count": window_count,
         "dino_box_window_seeds_added": dino_box_window_seeds_added,
@@ -924,10 +1101,12 @@ def segment_facade_components(
         "grid_regularization_reason": grid_quality["reason"],
         "grid_regularized_windows": grid_quality["regularized_windows"],
         "grid_regularized_inferred_windows": grid_quality["regularized_inferred_windows"],
-        "grid_rows": grid_quality["grid_rows"],
-        "grid_columns": grid_quality["grid_columns"],
-        "median_window_width_px": grid_quality.get("median_window_width_px"),
-        "median_window_height_px": grid_quality.get("median_window_height_px"),
+        "grid_rows": uniform_quality.get("grid_rows", grid_quality["grid_rows"]),
+        "grid_columns": uniform_quality.get("grid_cols", grid_quality["grid_columns"]),
+        "median_window_width_px": uniform_quality.get("window_w_px", grid_quality.get("median_window_width_px")),
+        "median_window_height_px": uniform_quality.get("window_h_px", grid_quality.get("median_window_height_px")),
+        "uniform_grid_applied": uniform_quality.get("uniform_grid", False),
+        "uniform_grid_windows": uniform_quality.get("windows_drawn", 0),
         "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
         "facade_mask_source": facade_source,
     }

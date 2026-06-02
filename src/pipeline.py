@@ -381,13 +381,7 @@ def _postprocess_facade_mask(segmentation: dict, aligned_facade: np.ndarray) -> 
     )
     overcast_sky = (hsv[:, :, 1] < 28) & (hsv[:, :, 2] >= 210)
     sky_pixels = (blue_sky | overcast_sky) & sky_zone
-    facade_mask = (facade_mask.astype(bool) & ~sky_pixels).astype(np.uint8)
-
-    # Morphological closing: fills small holes and rounds jagged SAM boundaries
-    # without significantly expanding the mask footprint.
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    facade_mask = cv2.morphologyEx(facade_mask, cv2.MORPH_CLOSE, kernel)
-    facade_clean = facade_mask.astype(bool)
+    facade_clean = facade_mask.astype(bool) & ~sky_pixels
 
     # Re-clip all derived masks to the cleaned facade boundary.
     segmentation["facade_mask"] = facade_clean

@@ -38,6 +38,25 @@ def _floor_band_centers(centers_y, min_floor_gap: float) -> list[float]:
     return [float(np.mean(band)) for band in bands]
 
 
+def _robust_floor_bands(mask_boxes: np.ndarray, adaptive_gap: float) -> list[float]:
+    """Return floor band centers after discarding sparse bands.
+
+    Bands with fewer than 40% of the median per-band window count are treated
+    as artifacts (cornices, transoms, parapets) rather than real floors.
+    """
+    band_centers = _floor_band_centers(mask_boxes[:, 1], adaptive_gap)
+    if len(band_centers) <= 1:
+        return band_centers
+
+    window_ys = mask_boxes[:, 1]
+    half = adaptive_gap * 0.65
+    counts = [max(1, int(np.sum(np.abs(window_ys - c) < half))) for c in band_centers]
+    median_count = float(np.median(counts))
+    threshold = median_count * 0.40
+
+    return [c for c, n in zip(band_centers, counts) if n >= threshold]
+
+
 def _facade_y_extent_norm(facade_mask) -> tuple[float, float] | None:
     if facade_mask is None or facade_mask.sum() == 0:
         return None
@@ -128,25 +147,18 @@ def _count_floors(
     if len(mask_boxes) > 0:
         median_h = float(np.median(mask_boxes[:, 3]))
         adaptive_gap = float(np.clip(median_h * 1.35, 0.035, 0.085))
-        mask_floor_bands = _floor_band_centers(mask_boxes[:, 1], adaptive_gap)
+        # Use robust band detection: drops sparse bands caused by cornices,
+        # transoms, or parapets that are mistaken for window rows.
+        mask_floor_bands = _robust_floor_bands(mask_boxes, adaptive_gap)
         candidates["segmented_window_mask"] = len(mask_floor_bands)
-        candidates["segmented_window_mask_with_facade_extent"] = (
-            _extrapolate_floors_from_facade_height(
-                mask_floor_bands,
-                facade_mask,
-            )
+        # Cap extrapolation at +1 over the direct (filtered) band count.
+        candidates["segmented_window_mask_with_facade_extent"] = min(
+            _extrapolate_floors_from_facade_height(mask_floor_bands, facade_mask),
+            len(mask_floor_bands) + 1,
         )
 
     if not candidates:
         return 5, "default-floor-count", {"default": 5}
-
-    # Limit facade-extent extrapolation to +1 floor over the direct band count to
-    # avoid doubling up with the max-selection bias that existed before this fix.
-    if "segmented_window_mask" in candidates and "segmented_window_mask_with_facade_extent" in candidates:
-        candidates["segmented_window_mask_with_facade_extent"] = min(
-            candidates["segmented_window_mask_with_facade_extent"],
-            candidates["segmented_window_mask"] + 1,
-        )
 
     values = sorted(candidates.values())
     n = len(values)

@@ -837,8 +837,10 @@ def _build_uniform_window_grid(
     if facade_area == 0 or window_mask.sum() == 0:
         return window_mask, {"uniform_grid": False, "reason": "empty-input"}
 
-    min_area = max(20, int(facade_area * 0.00010))
-    max_area = max(min_area + 1, int(facade_area * 0.035))
+    # Minimum 0.05 % of facade area — filters tiny noise blobs (reflections,
+    # shadows, CV artefacts) that previously dominated the median calculation.
+    min_area = max(80, int(facade_area * 0.0005))
+    max_area = max(min_area + 1, int(facade_area * 0.050))
 
     num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
         window_mask.astype(np.uint8), connectivity=8
@@ -848,29 +850,39 @@ def _build_uniform_window_grid(
         x, y, w, h, area = stats[lbl]
         if not (min_area <= area <= max_area):
             continue
-        if w < 4 or h < 6:
+        if w < 6 or h < 8:
             continue
-        if not (0.25 <= h / max(w, 1) <= 7.0):
+        if not (0.20 <= h / max(w, 1) <= 8.0):
             continue
         cx, cy = float(centroids[lbl][0]), float(centroids[lbl][1])
         if not facade_mask[int(np.clip(cy, 0, height - 1)), int(np.clip(cx, 0, width - 1))]:
             continue
-        components.append({"cx": cx, "cy": cy, "w": int(w), "h": int(h)})
+        components.append({"cx": cx, "cy": cy, "w": int(w), "h": int(h), "area": int(area)})
 
     if len(components) < 4:
         return window_mask, {"uniform_grid": False, "reason": "too-few-components"}
 
-    # Compute robust median size, excluding obvious outliers
-    raw_mw = float(np.median([c["w"] for c in components]))
-    raw_mh = float(np.median([c["h"] for c in components]))
-    valid = [c for c in components
-             if 0.35 * raw_mw <= c["w"] <= 2.2 * raw_mw
-             and 0.35 * raw_mh <= c["h"] <= 2.2 * raw_mh]
-    if len(valid) < 4:
-        valid = components
+    # Robust median from the LARGER half of components only.
+    # If there are still some noise blobs mixed in, they will be the smaller ones,
+    # so taking the top-65% by area gives a median that reflects real windows.
+    areas_list = [c["area"] for c in components]
+    area_cutoff = float(np.percentile(areas_list, 35))
+    primary = [c for c in components if c["area"] >= area_cutoff]
+    if len(primary) < 4:
+        primary = components
 
-    uni_w = int(np.clip(round(np.median([c["w"] for c in valid])), 5, width // 3))
-    uni_h = int(np.clip(round(np.median([c["h"] for c in valid])), 7, height // 2))
+    raw_mw = float(np.median([c["w"] for c in primary]))
+    raw_mh = float(np.median([c["h"] for c in primary]))
+
+    # Tighter filter: 50 %–180 % of the primary-derived median
+    valid = [c for c in components
+             if 0.50 * raw_mw <= c["w"] <= 1.80 * raw_mw
+             and 0.50 * raw_mh <= c["h"] <= 1.80 * raw_mh]
+    if len(valid) < 4:
+        valid = primary
+
+    uni_w = int(np.clip(round(np.median([c["w"] for c in valid])), 6, width // 3))
+    uni_h = int(np.clip(round(np.median([c["h"] for c in valid])), 8, height // 2))
 
     # Cluster centres into rows and columns with adaptive tolerance
     row_tol = max(8.0, uni_h * 0.75)

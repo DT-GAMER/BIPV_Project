@@ -754,37 +754,68 @@ def segmentation_measurement_quality(quality):
 
 
 def _clean_facade_boundary(facade_mask: np.ndarray) -> np.ndarray:
-    """Replace a jagged SAM facade outline with a smooth, hole-free polygon.
+    """Replace a jagged SAM facade outline with a smooth, solid polygon.
 
-    Drops tiny disconnected fragments (< 20% of the largest component), then
-    applies a strong morphological close to fill all interior holes. This gives
-    a solid, presentation-quality facade shape without a convex-hull that would
-    incorrectly bridge irregular rooflines or building recesses.
+    Three steps:
+    1. Drop disconnected fragments smaller than 20% of the largest component.
+    2. Fill all interior holes with a strong morphological close.
+    3. Simplify the outer contour with approxPolyDP — this removes spiky
+       protrusions that closing alone cannot eliminate, giving the clean
+       rectangular-ish building outline needed for publication figures.
     """
     uint = facade_mask.astype(np.uint8)
 
-    # Drop small disconnected SAM fragments — keep any component ≥ 20% of largest
+    # Step 1 — keep only the single largest component.
+    # Using "all components ≥ 20%" caused ground-floor commercial units and
+    # upper-floor residential zones to merge into irregular combined shapes.
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(uint, connectivity=8)
     if num_labels > 1:
-        areas = stats[1:, cv2.CC_STAT_AREA].astype(float)
-        max_area = float(areas.max())
-        keep = [1 + i for i, a in enumerate(areas) if a >= max_area * 0.20]
-        uint = np.isin(labels, keep).astype(np.uint8)
+        largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        uint = (labels == largest).astype(np.uint8)
 
     if uint.sum() == 0:
         return facade_mask
 
     height, width = uint.shape
-    # Strong close fills all interior holes (chimneys, sky pockets, etc.)
+
+    # Step 2 — fill interior holes with strong closing
     k = max(21, int(min(height, width) * 0.055))
     k = k if k % 2 == 1 else k + 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-    uint = cv2.morphologyEx(uint, cv2.MORPH_CLOSE, kernel)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    filled = cv2.morphologyEx(uint, cv2.MORPH_CLOSE, kernel_close)
 
-    # Safety: if closing shrank the mask below 50% of original, return original
-    result = uint.astype(bool)
+    # Step 2b — morphological opening removes protrusions that closing leaves behind.
+    # Erosion shrinks protrusions; dilation restores the main body.
+    k_open = max(9, k // 4)
+    k_open = k_open if k_open % 2 == 1 else k_open + 1
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+    opened = cv2.morphologyEx(filled, cv2.MORPH_OPEN, kernel_open)
+
+    # Step 2c — light closing to smooth the boundary after opening
+    opened = cv2.morphologyEx(
+        opened,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+    )
+
+    # Step 3 — simplify the outer contour to a smooth polygon.
+    # approxPolyDP at 1.5 % of perimeter gives a clean building-outline polygon.
+    contours, _ = cv2.findContours(opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return opened.astype(bool)
+
+    main_contour = max(contours, key=cv2.contourArea)
+    perimeter = cv2.arcLength(main_contour, True)
+    epsilon = max(10.0, perimeter * 0.015)
+    simplified = cv2.approxPolyDP(main_contour, epsilon, True)
+
+    clean = np.zeros_like(uint)
+    cv2.fillPoly(clean, [simplified], 1)
+
+    result = clean.astype(bool)
+    # Safety fallback: if simplification removed too much real facade area, return opened
     if result.sum() < facade_mask.sum() * 0.50:
-        return facade_mask
+        return opened.astype(bool)
     return result
 
 

@@ -211,21 +211,40 @@ def workflow_images_from_result(result, segmentation_view: str = "overlay"):
     This matches the reference paper layout where the building fills the cell.
     """
 
-    # Source-image-space crop: DINO building bounding box
+    # Source-image-space crop: use the perspective-transform source quad corners.
+    # These are the exact 4 corners of the facade region used for the homography —
+    # tighter and more accurate than the DINO bbox which includes adjacent buildings.
     source_bbox = None
-    try:
-        bb = result["stages"]["source_detection"]["source_building_bbox"]
-        h_src, w_src = result["image_rgb"].shape[:2]
-        pad_x = max(10, int((bb[2] - bb[0]) * 0.06))
-        pad_y = max(10, int((bb[3] - bb[1]) * 0.06))
-        source_bbox = [
-            max(0, int(bb[0]) - pad_x),
-            max(0, int(bb[1]) - pad_y),
-            min(w_src, int(bb[2]) + pad_x),
-            min(h_src, int(bb[3]) + pad_y),
-        ]
-    except (KeyError, TypeError, IndexError):
-        pass
+    src_corners = result.get("src_corners")
+    h_src, w_src = result["image_rgb"].shape[:2]
+    if src_corners is not None and len(src_corners) >= 3:
+        try:
+            corners = np.asarray(src_corners)
+            xs, ys = corners[:, 0], corners[:, 1]
+            pad_x = max(10, int((xs.max() - xs.min()) * 0.04))
+            pad_y = max(10, int((ys.max() - ys.min()) * 0.04))
+            source_bbox = [
+                max(0, int(xs.min()) - pad_x),
+                max(0, int(ys.min()) - pad_y),
+                min(w_src, int(xs.max()) + pad_x),
+                min(h_src, int(ys.max()) + pad_y),
+            ]
+        except (TypeError, IndexError):
+            pass
+    if source_bbox is None:
+        # Fallback to DINO building bbox if src_corners unavailable
+        try:
+            bb = result["stages"]["source_detection"]["source_building_bbox"]
+            pad_x = max(10, int((bb[2] - bb[0]) * 0.04))
+            pad_y = max(10, int((bb[3] - bb[1]) * 0.04))
+            source_bbox = [
+                max(0, int(bb[0]) - pad_x),
+                max(0, int(bb[1]) - pad_y),
+                min(w_src, int(bb[2]) + pad_x),
+                min(h_src, int(bb[3]) + pad_y),
+            ]
+        except (KeyError, TypeError, IndexError):
+            pass
 
     # Aligned-image-space crop: facade mask bounding box
     aligned_bbox = _bbox_from_mask(result["segmentation"]["facade_mask"], padding_frac=0.06)

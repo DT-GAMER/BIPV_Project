@@ -35,7 +35,7 @@ from .inpainting import (
 from .model_loader import load_models
 from .preprocessing import load_and_preprocess_image
 from .scaling import estimate_real_world_scale
-from .segmentation import segment_facade_components
+from .segmentation import _clean_facade_boundary, segment_facade_components
 from .trained_facade_parser import run_trained_facade_parser
 from .utils import dilate_mask
 
@@ -381,9 +381,14 @@ def _postprocess_facade_mask(segmentation: dict, aligned_facade: np.ndarray) -> 
     )
     overcast_sky = (hsv[:, :, 1] < 28) & (hsv[:, :, 2] >= 210)
     sky_pixels = (blue_sky | overcast_sky) & sky_zone
-    facade_clean = facade_mask.astype(bool) & ~sky_pixels
+    # Sky removal
+    facade_after_sky = facade_mask.astype(bool) & ~sky_pixels
 
-    # Re-clip all derived masks to the cleaned facade boundary.
+    # Re-apply clean boundary after all pipeline AND-clips (rectified_content_mask,
+    # architectural exclusions) which re-introduce jagged SAM edges.
+    facade_clean = _clean_facade_boundary(facade_after_sky)
+
+    # Re-clip all derived masks to the final clean boundary.
     segmentation["facade_mask"] = facade_clean
     for key in ("window_mask", "raw_window_mask", "door_mask", "balcony_mask", "roof_mask"):
         if key in segmentation:

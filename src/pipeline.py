@@ -557,12 +557,46 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     }
 
     print("Stage 6/8 - Facade rectification")
+    # Run SAM on the obstacle-removed image to find the actual facade polygon.
+    # This gives proper 4-corner perspective correction instead of the axis-aligned
+    # bounding-box approach which produces near-identity transforms.
+    from .geometry import find_facade_quad_from_mask
+    h_img, w_img = clean_image.shape[:2]
+    bbox_region = np.zeros((h_img, w_img), dtype=bool)
+    bbox_region[
+        max(0, int(by1)) : min(h_img, int(by2) + 1),
+        max(0, int(bx1)) : min(w_img, int(bx2) + 1),
+    ] = True
+    quick_auto_masks = models["mask_generator"].generate(clean_image)
+    facade_quad = None
+    for mask_data in sorted(quick_auto_masks, key=lambda m: m["area"], reverse=True)[:10]:
+        candidate = mask_data["segmentation"] & bbox_region
+        coverage = float(candidate.sum()) / max(float(bbox_region.sum()), 1)
+        if not (0.30 <= coverage <= 1.05):
+            continue
+        ys_c, xs_c = np.where(candidate)
+        if len(xs_c) == 0:
+            continue
+        c_h = int(ys_c.max() - ys_c.min() + 1)
+        c_w = int(xs_c.max() - xs_c.min() + 1)
+        if candidate.sum() / max(c_h * c_w, 1) < 0.38:
+            continue
+        corners = find_facade_quad_from_mask(candidate)
+        if corners is not None:
+            facade_quad = corners
+            break
+    del quick_auto_masks  # free memory before full segmentation SAM run
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Metric area estimates require rectification to keep the original image
     # canvas and detected building footprint stable.
     rectification = rectify_facade(
         clean_image,
         keep_boxes,
         preserve_original_size=True,
+        facade_quad=facade_quad,
     )
     aligned_facade = rectification.aligned_facade
     transform_matrix = rectification.transform_matrix

@@ -351,23 +351,134 @@ def _source_corner_quality(src_corners, image_shape, vanishing_point, vertical_l
     }
 
 
+def _order_corners(pts: np.ndarray) -> np.ndarray:
+    """Order 4 points as [TL, TR, BR, BL] using sum/diff of coordinates."""
+    s = pts.sum(axis=1)          # x+y: TL=min, BR=max
+    d = pts[:, 0] - pts[:, 1]   # x-y: TR=max, BL=min
+    return np.array([
+        pts[np.argmin(s)],
+        pts[np.argmax(d)],
+        pts[np.argmax(s)],
+        pts[np.argmin(d)],
+    ], dtype=np.float32)
+
+
+def find_facade_quad_from_mask(facade_mask: np.ndarray):
+    """Find the 4-corner perspective quad of the facade from a binary mask.
+
+    The mask may be a trapezoid (angled building). approxPolyDP finds the
+    4 actual corners, which are then ordered TL, TR, BR, BL for the homography.
+    Returns None if 4 corners cannot be reliably identified.
+    """
+    uint = facade_mask.astype(np.uint8)
+
+    # Keep only the largest connected component
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(uint, connectivity=8)
+    if num_labels > 1:
+        largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        uint = (labels == largest).astype(np.uint8)
+
+    if uint.sum() == 0:
+        return None
+
+    # Fill interior holes so the contour is solid
+    h, w = uint.shape
+    k = max(15, int(min(h, w) * 0.04))
+    k = k if k % 2 == 1 else k + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    filled = cv2.morphologyEx(uint, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    main = max(contours, key=cv2.contourArea)
+    perimeter = cv2.arcLength(main, True)
+
+    # Try progressively looser approximations until we get exactly 4 corners
+    for eps_factor in [0.02, 0.03, 0.05, 0.07, 0.10, 0.14, 0.20]:
+        approx = cv2.approxPolyDP(main, eps_factor * perimeter, True)
+        if len(approx) == 4:
+            pts = approx.reshape(4, 2).astype(np.float32)
+            return _order_corners(pts)
+    return None
+
+
 def rectify_facade(
     clean_image,
     keep_boxes,
     preserve_original_size: bool = True,
     pad_frac: float = 0.02,
     min_line_length: int = 80,
+    facade_quad: np.ndarray | None = None,
 ) -> FacadeRectificationResult:
     """Run the full high-level facade rectification stage.
 
     This converts an angled facade photo into a more front-facing facade frame:
     detect vertical structure, estimate a vanishing point when possible, build
     the facade source boundary, then apply a homography/perspective transform.
+
+    When ``facade_quad`` is provided (a (4, 2) float32 array of corners ordered
+    TL, TR, BR, BL), it is used directly to warp the actual facade trapezoid to
+    a rectangle instead of relying on the axis-aligned DINO bounding box.
     """
 
     vertical_lines = get_vertical_lines(clean_image, min_length=min_line_length)
     vanishing_point = robust_vanishing_point(vertical_lines)
 
+    if facade_quad is not None:
+        # SAM-derived 4 corners: warp the actual facade trapezoid to a rectangle
+        src = facade_quad
+        h_img, w_img = clean_image.shape[:2]
+        x_min = int(np.clip(facade_quad[:, 0].min(), 0, w_img - 1))
+        y_min = int(np.clip(facade_quad[:, 1].min(), 0, h_img - 1))
+        x_max = int(np.clip(facade_quad[:, 0].max(), 0, w_img - 1))
+        y_max = int(np.clip(facade_quad[:, 1].max(), 0, h_img - 1))
+        dst = np.array(
+            [[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]],
+            dtype=np.float32,
+        )
+        transform_matrix = cv2.getPerspectiveTransform(src, dst)
+        if preserve_original_size:
+            aligned_facade = cv2.warpPerspective(
+                clean_image, transform_matrix, (w_img, h_img),
+                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+            )
+            content_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+            cv2.fillPoly(content_mask, [dst.astype(np.int32)], 1)
+            content_mask = content_mask.astype(bool)
+            output_mode = "sam-quad-preserve-original-size"
+        else:
+            out_w = max(100, x_max - x_min)
+            out_h = max(100, y_max - y_min)
+            out_dst = np.array([[0, 0], [out_w, 0], [out_w, out_h], [0, out_h]], dtype=np.float32)
+            transform_matrix = cv2.getPerspectiveTransform(src, out_dst)
+            aligned_facade = cv2.warpPerspective(
+                clean_image, transform_matrix, (out_w, out_h),
+                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+            )
+            content_mask = None
+            output_mode = "sam-quad-crop"
+        src_corners = src
+        quality = _source_corner_quality(src_corners, clean_image.shape, vanishing_point, len(vertical_lines))
+        quality["facade_quad_source"] = "sam"
+        quality.update({
+            "input_shape": tuple(clean_image.shape),
+            "aligned_shape": tuple(aligned_facade.shape),
+            "output_mode": output_mode,
+            "preserve_original_size": preserve_original_size,
+            "preserve_building_footprint": preserve_original_size,
+            "transform_matrix": transform_matrix.astype(float).round(6).tolist(),
+        })
+        return FacadeRectificationResult(
+            aligned_facade=aligned_facade,
+            transform_matrix=transform_matrix,
+            source_corners=src_corners,
+            content_mask=content_mask,
+            quality=quality,
+        )
+
+    # Fallback: existing line-based approach
     if preserve_original_size:
         aligned_facade, transform_matrix, src_corners, content_mask = rectify_to_original_size(
             clean_image,

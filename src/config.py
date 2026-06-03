@@ -90,7 +90,7 @@ class AnalysisConfig:
     dino_box_threshold: float = 0.25
     dino_text_threshold: float = 0.20
     random_seed: int = 42
-    exclude_ground_floor: bool = True
+    exclude_ground_floor: bool = False
 
 
 def automatic_config(

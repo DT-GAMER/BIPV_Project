@@ -364,6 +364,52 @@ def _set_random_seeds(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
+def _exclude_ground_floor_from_mask(
+    segmentation: dict, dimensions: dict
+) -> tuple[dict, dict]:
+    """Remove the ground floor from the facade mask and update area dimensions.
+
+    The ground floor (commercial units, entrances, pavement level) is excluded
+    from BIPV assessment because it is not accessible for panel installation.
+    One floor's worth of height is trimmed from the bottom of the facade mask.
+    Dimensions are updated proportionally so px_to_m2 stays consistent.
+    """
+    num_floors = dimensions.get("num_floors", 1)
+    if num_floors < 2:
+        return segmentation, dimensions
+
+    facade_mask = segmentation["facade_mask"]
+    ys, _ = np.where(facade_mask)
+    if len(ys) == 0:
+        return segmentation, dimensions
+
+    facade_bottom_y = int(ys.max())
+    facade_top_y = int(ys.min())
+    facade_height_px = facade_bottom_y - facade_top_y + 1
+    ground_floor_px = int(round(facade_height_px / num_floors))
+    cutoff_y = facade_bottom_y - ground_floor_px + 1
+
+    ground_floor_zone = np.zeros_like(facade_mask, dtype=bool)
+    if cutoff_y < facade_mask.shape[0]:
+        ground_floor_zone[cutoff_y:, :] = True
+
+    updated_facade = facade_mask & ~ground_floor_zone
+    segmentation["facade_mask"] = updated_facade
+    for key in ("window_mask", "raw_window_mask", "door_mask", "balcony_mask", "roof_mask"):
+        if key in segmentation:
+            segmentation[key] = segmentation[key] & updated_facade
+
+    new_num_floors = num_floors - 1
+    new_height_m = dimensions["height_m"] * new_num_floors / num_floors
+    updated_dims = dict(dimensions)
+    updated_dims["num_floors"] = new_num_floors
+    updated_dims["height_m"] = new_height_m
+    updated_dims["total_facade_area_m2"] = new_height_m * dimensions["width_m"]
+    updated_dims["ground_floor_excluded"] = True
+    updated_dims["ground_floor_height_m"] = round(dimensions["height_m"] / num_floors, 2)
+    return segmentation, updated_dims
+
+
 def _postprocess_facade_mask(segmentation: dict, aligned_facade: np.ndarray) -> dict:
     """Remove sky pixels and smooth facade mask edges after segmentation."""
 
@@ -621,6 +667,9 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "floor_count_candidates": dimensions.get("floor_count_candidates"),
         "validation": validation,
     }
+
+    if config.exclude_ground_floor:
+        segmentation, dimensions = _exclude_ground_floor_from_mask(segmentation, dimensions)
 
     obstacle_mask_for_area = reconstructed_mask
     if config.exclude_obstacle_area_from_usable:

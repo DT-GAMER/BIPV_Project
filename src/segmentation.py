@@ -893,6 +893,28 @@ def _build_uniform_window_grid(
     if not row_centers or not col_centers:
         return window_mask, {"uniform_grid": False, "reason": "clustering-failed"}
 
+    # Re-estimate window size from the actual grid spacing.
+    # Detected components are often individual panes; the floor pitch (row gap)
+    # and column pitch give the true opening dimensions.
+    # Window height = 65-90 % of floor pitch; width = 68-90 % of column pitch.
+    if len(row_centers) >= 2:
+        med_row_gap = float(np.median(np.diff(np.array(sorted(row_centers)))))
+        if med_row_gap > 0:
+            uni_h = int(np.clip(
+                max(uni_h, round(med_row_gap * 0.65)),
+                8,
+                round(med_row_gap * 0.90),
+            ))
+
+    if len(col_centers) >= 2:
+        med_col_gap = float(np.median(np.diff(np.array(sorted(col_centers)))))
+        if med_col_gap > 0:
+            uni_w = int(np.clip(
+                max(uni_w, round(med_col_gap * 0.68)),
+                6,
+                round(med_col_gap * 0.90),
+            ))
+
     # Mark which (row, col) grid cells have actual detection support
     occupied = set()
     for comp in valid:

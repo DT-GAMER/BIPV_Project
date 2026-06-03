@@ -177,8 +177,58 @@ def _draw_method_cell(axis, row, stage_name):
         )
 
 
+def _bbox_from_mask(mask, padding_frac: float = 0.06):
+    """Return [x1, y1, x2, y2] pixel bbox of the non-zero mask area with padding."""
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return None
+    h, w = mask.shape
+    x1, y1, x2, y2 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+    pad_x = max(10, int((x2 - x1) * padding_frac))
+    pad_y = max(10, int((y2 - y1) * padding_frac))
+    return [max(0, x1 - pad_x), max(0, y1 - pad_y),
+            min(w, x2 + pad_x), min(h, y2 + pad_y)]
+
+
+def _crop_to_bbox(image_rgb, bbox):
+    """Crop an image array to a [x1, y1, x2, y2] bounding box."""
+    if bbox is None:
+        return image_rgb
+    img = np.asarray(image_rgb)
+    h, w = img.shape[:2]
+    x1, y1 = max(0, int(bbox[0])), max(0, int(bbox[1]))
+    x2, y2 = min(w, int(bbox[2])), min(h, int(bbox[3]))
+    if x2 <= x1 or y2 <= y1:
+        return image_rgb
+    return img[y1:y2, x1:x2]
+
+
 def workflow_images_from_result(result, segmentation_view: str = "overlay"):
-    """Create ordered stage images for one pipeline result."""
+    """Create ordered stage images for one pipeline result.
+
+    Each row is cropped tightly to the building — source rows (1-3) use the
+    DINO-detected building bbox; rectified rows (4-5) use the facade mask bbox.
+    This matches the reference paper layout where the building fills the cell.
+    """
+
+    # Source-image-space crop: DINO building bounding box
+    source_bbox = None
+    try:
+        bb = result["stages"]["source_detection"]["source_building_bbox"]
+        h_src, w_src = result["image_rgb"].shape[:2]
+        pad_x = max(10, int((bb[2] - bb[0]) * 0.06))
+        pad_y = max(10, int((bb[3] - bb[1]) * 0.06))
+        source_bbox = [
+            max(0, int(bb[0]) - pad_x),
+            max(0, int(bb[1]) - pad_y),
+            min(w_src, int(bb[2]) + pad_x),
+            min(h_src, int(bb[3]) + pad_y),
+        ]
+    except (KeyError, TypeError, IndexError):
+        pass
+
+    # Aligned-image-space crop: facade mask bounding box
+    aligned_bbox = _bbox_from_mask(result["segmentation"]["facade_mask"], padding_frac=0.06)
 
     if segmentation_view == "overlay":
         segmentation_title = "Segmentation Overlay"
@@ -188,14 +238,19 @@ def workflow_images_from_result(result, segmentation_view: str = "overlay"):
         segmentation_image = make_binary_mask_image(result["usable_results"]["usable_mask"])
 
     return [
-        ("Facade Image", result["image_rgb"]),
-        (
-            "Obstacle Detection",
-            make_mask_overlay(result["image_rgb"], result["obstacle_mask"], color=(255, 0, 0)),
-        ),
-        ("Obstacle Removal", result["clean_image"]),
-        ("Facade Alignment", result["aligned_facade"]),
-        (segmentation_title, segmentation_image),
+        ("Facade Image",
+         _crop_to_bbox(result["image_rgb"], source_bbox)),
+        ("Obstacle Detection",
+         _crop_to_bbox(
+             make_mask_overlay(result["image_rgb"], result["obstacle_mask"], color=(255, 0, 0)),
+             source_bbox,
+         )),
+        ("Obstacle Removal",
+         _crop_to_bbox(result["clean_image"], source_bbox)),
+        ("Facade Alignment",
+         _crop_to_bbox(result["aligned_facade"], aligned_bbox)),
+        (segmentation_title,
+         _crop_to_bbox(segmentation_image, aligned_bbox)),
     ]
 
 

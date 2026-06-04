@@ -58,6 +58,48 @@ def _semantic_phrase_class(phrase: str) -> str:
     return phrase
 
 
+def _sanitize_roof_mask(roof_mask, facade_mask):
+    """Keep only conservative roof/parapet exclusions near the facade top."""
+
+    if roof_mask.sum() == 0 or facade_mask.sum() == 0:
+        return np.zeros_like(facade_mask, dtype=bool)
+
+    extent = _facade_extent(facade_mask)
+    if extent is None:
+        return np.zeros_like(facade_mask, dtype=bool)
+    _, facade_top, _, facade_bottom = extent
+    facade_height = max(facade_bottom - facade_top + 1, 1)
+    top_limit = min(
+        facade_mask.shape[0],
+        facade_top + int(round(facade_height * 0.32)),
+    )
+    top_zone = np.zeros_like(facade_mask, dtype=bool)
+    top_zone[facade_top:top_limit, :] = True
+    candidate = roof_mask & facade_mask & top_zone
+
+    facade_area = int(facade_mask.sum())
+    cleaned = np.zeros_like(candidate, dtype=bool)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        candidate.astype(np.uint8),
+        connectivity=8,
+    )
+    for label_id in range(1, num_labels):
+        _, y, _, component_h, area = stats[label_id]
+        if area > facade_area * 0.12:
+            continue
+        if component_h > facade_height * 0.28:
+            continue
+        if y > facade_top + facade_height * 0.24:
+            continue
+        cleaned |= labels == label_id
+
+    # A roof exclusion should never consume a substantial fraction of the
+    # vertical facade. Uncertainty is safer than subtracting most of the wall.
+    if cleaned.sum() > facade_area * 0.18:
+        return np.zeros_like(facade_mask, dtype=bool)
+    return cleaned
+
+
 def apply_nms_per_class(boxes_normalized, logits, phrases, height: int, width: int, iou: float = 0.35):
     if len(boxes_normalized) == 0:
         return []
@@ -1342,6 +1384,9 @@ def segment_facade_components(
             door_mask |= mask[0]
         elif semantic_class == "roof":
             masks, scores, _ = predictor.predict(box=input_box, multimask_output=True)
+            x1, y1, x2, y2 = _clip_int_box(*input_box, height, width)
+            roof_box_mask = np.zeros((height, width), dtype=bool)
+            roof_box_mask[y1:y2, x1:x2] = True
             box_area_px = max(
                 (input_box[2] - input_box[0]) * (input_box[3] - input_box[1]),
                 1,
@@ -1356,7 +1401,9 @@ def segment_facade_components(
                 if valid
                 else masks[int(np.argmax(scores))]
             )
-            roof_mask |= best & facade_mask
+            roof_mask |= best & roof_box_mask & facade_mask
+
+    roof_mask = _sanitize_roof_mask(roof_mask, facade_mask)
 
     window_count = sum(1 for phrase in phrases if _semantic_phrase_class(phrase) == "window")
     window_mask, dino_box_window_seeds_added = _add_dino_window_box_seeds(

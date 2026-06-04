@@ -622,6 +622,10 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         cv_window_min_area_fraction=config.cv_window_min_area_fraction,
         cv_window_max_area_fraction=config.cv_window_max_area_fraction,
         reconstructed_mask=reconstructed_mask,
+        preserve_observed_window_geometry=config.preserve_observed_window_geometry,
+        infer_windows_in_reconstructed_regions=config.infer_windows_in_reconstructed_regions,
+        use_window_grid_regularization=config.use_window_grid_regularization,
+        use_uniform_window_grid=config.use_uniform_window_grid,
     )
     trained_segmentation, trained_parser_stage = _segmentation_from_trained_parser(
         aligned_facade,
@@ -656,18 +660,13 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     segmentation = _postprocess_facade_mask(segmentation, aligned_facade)
     stages["segmentation"] = segmentation["quality"]
 
-    window_boxes_np = np.array(
-        [
-            box.cpu().numpy()
-            for box, phrase in zip(segmentation["boxes"], segmentation["phrases"])
-            if "window" in phrase.lower()
-        ]
+    # Scaling and floor inference must use the final semantic opening mask,
+    # including SAM/CV detections and conservative hidden-window inference,
+    # rather than only the smaller set of direct DINO boxes.
+    window_boxes_np = _window_boxes_from_mask(
+        segmentation["window_mask"],
+        segmentation["facade_mask"],
     )
-    if len(window_boxes_np) == 0:
-        window_boxes_np = _window_boxes_from_mask(
-            segmentation["window_mask"],
-            segmentation["facade_mask"],
-        )
     facade_grid = align_facade_grid(window_boxes_np)
     stages["alignment"] = {
         "floor_bands": len(facade_grid["floors"]),

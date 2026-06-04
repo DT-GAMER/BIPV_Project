@@ -87,6 +87,10 @@ class AnalysisConfig:
     use_cv_window_fallback: bool = True
     cv_window_min_area_fraction: float = 0.00020
     cv_window_max_area_fraction: float = 0.02000
+    preserve_observed_window_geometry: bool = True
+    infer_windows_in_reconstructed_regions: bool = True
+    use_window_grid_regularization: bool = False
+    use_uniform_window_grid: bool = False
     dino_box_threshold: float = 0.25
     dino_text_threshold: float = 0.20
     random_seed: int = 42

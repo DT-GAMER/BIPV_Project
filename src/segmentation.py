@@ -41,14 +41,32 @@ def boxes_to_xyxy(boxes_normalized, height: int, width: int):
     return torch.stack([cx - box_width / 2, cy - box_height / 2, cx + box_width / 2, cy + box_height / 2], dim=1)
 
 
+def _semantic_phrase_class(phrase: str) -> str:
+    """Map open-vocabulary phrases onto stable facade semantic classes."""
+
+    phrase = phrase.lower().strip()
+    if "window" in phrase or "curtain wall" in phrase:
+        return "window"
+    if any(token in phrase for token in ("door", "entrance", "doorway", "storefront")):
+        return "door"
+    if "balcony" in phrase or "terrace" in phrase:
+        return "balcony"
+    if "roof" in phrase or "parapet" in phrase:
+        return "roof"
+    if "wall" in phrase or "facade" in phrase:
+        return "facade"
+    return phrase
+
+
 def apply_nms_per_class(boxes_normalized, logits, phrases, height: int, width: int, iou: float = 0.35):
     if len(boxes_normalized) == 0:
         return []
 
     boxes_px = boxes_to_xyxy(boxes_normalized, height, width)
     keep = []
-    for cls in set(phrase.lower().strip() for phrase in phrases):
-        indices = [index for index, phrase in enumerate(phrases) if cls in phrase.lower()]
+    semantic_classes = [_semantic_phrase_class(phrase) for phrase in phrases]
+    for cls in set(semantic_classes):
+        indices = [index for index, semantic_class in enumerate(semantic_classes) if cls == semantic_class]
         if indices:
             kept = torchvision_nms(boxes_px[indices].float(), logits[indices].float(), iou)
             keep.extend(indices[index] for index in kept.tolist())
@@ -56,17 +74,27 @@ def apply_nms_per_class(boxes_normalized, logits, phrases, height: int, width: i
 
 
 def detect_facade_elements(aligned_facade, dino_model, device: str):
-    """Detect windows, doors, entrances, and balconies on the rectified facade."""
+    """Detect facade semantic classes with focused Grounding DINO prompts."""
 
     from groundingdino.util.inference import predict as dino_predict
 
     image_tensor = preprocess_for_dino(aligned_facade, device)
-    boxes_raw, logits_raw, phrases_raw = None, None, None
-    caption = (
-        "window . glass window . facade window . door . entrance . balcony . "
-        "wall . roof edge"
-    )
-    for box_threshold, text_threshold in [(0.22, 0.16), (0.18, 0.12), (0.14, 0.10), (0.10, 0.08)]:
+    prompt_groups = [
+        (
+            "window . building window . facade window . glass window . "
+            "window opening . curtain wall window",
+            0.14,
+            0.10,
+        ),
+        ("door . building entrance . doorway . glass entrance . storefront", 0.18, 0.12),
+        ("balcony . terrace . projecting balcony", 0.18, 0.12),
+        ("facade wall . building facade . exterior wall", 0.20, 0.14),
+        ("roof edge . parapet . roof line", 0.20, 0.14),
+    ]
+    all_boxes = []
+    all_logits = []
+    all_phrases = []
+    for caption, box_threshold, text_threshold in prompt_groups:
         boxes, logits, phrases = dino_predict(
             model=dino_model,
             image=image_tensor,
@@ -74,12 +102,18 @@ def detect_facade_elements(aligned_facade, dino_model, device: str):
             box_threshold=box_threshold,
             text_threshold=text_threshold,
         )
-        if boxes_raw is None:
-            boxes_raw, logits_raw, phrases_raw = boxes, logits, phrases
-        if sum(1 for phrase in phrases if "window" in phrase.lower()) >= 3:
-            boxes_raw, logits_raw, phrases_raw = boxes, logits, phrases
-            break
-    return boxes_raw, logits_raw, phrases_raw
+        if len(boxes):
+            all_boxes.append(boxes)
+            all_logits.append(logits)
+            all_phrases.extend(phrases)
+
+    if not all_boxes:
+        return (
+            torch.empty((0, 4), device=device),
+            torch.empty((0,), device=device),
+            [],
+        )
+    return torch.cat(all_boxes), torch.cat(all_logits), all_phrases
 
 
 def _add_sam_window_fallback(
@@ -138,7 +172,7 @@ def _add_sam_window_fallback(
         aspect = bbox_h / max(bbox_w, 1)
         fill_ratio = area / max(bbox_w * bbox_h, 1)
 
-        if not (0.45 <= aspect <= 3.50):
+        if not (0.15 <= aspect <= 8.0):
             continue
         if fill_ratio < 0.25:
             continue
@@ -206,7 +240,7 @@ def _add_cv_window_fallback(
             continue
 
         aspect = bbox_h / max(bbox_w, 1)
-        if not (0.60 <= aspect <= 7.0):
+        if not (0.12 <= aspect <= 10.0):
             continue
 
         contour_area = cv2.contourArea(contour)
@@ -249,7 +283,7 @@ def _add_dino_window_box_seeds(
     added = 0
 
     for box, phrase in zip(boxes, phrases):
-        if "window" not in phrase.lower():
+        if _semantic_phrase_class(phrase) != "window":
             continue
 
         x1, y1, x2, y2 = decode_box(box.cpu().numpy(), height, width)
@@ -259,9 +293,9 @@ def _add_dino_window_box_seeds(
         area_fraction = box_area / max(facade_area, 1)
         aspect = box_h / max(box_w, 1)
 
-        if not (0.00008 <= area_fraction <= 0.045):
+        if not (0.00008 <= area_fraction <= 0.080):
             continue
-        if not (0.35 <= aspect <= 7.0):
+        if not (0.12 <= aspect <= 10.0):
             continue
 
         shrink_x = int(round(box_w * 0.08))
@@ -300,7 +334,7 @@ def _component_boxes_from_mask(mask, facade_mask):
         return []
 
     min_area = max(20, int(facade_area * 0.00008))
-    max_area = max(min_area + 1, int(facade_area * 0.035))
+    max_area = max(min_area + 1, int(facade_area * 0.080))
     num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
         mask.astype(np.uint8),
         connectivity=8,
@@ -314,7 +348,7 @@ def _component_boxes_from_mask(mask, facade_mask):
         if box_w < 4 or box_h < 6:
             continue
         aspect = box_h / max(box_w, 1)
-        if not (0.35 <= aspect <= 5.5):
+        if not (0.12 <= aspect <= 10.0):
             continue
         cx, cy = centroids[label]
         boxes.append(
@@ -715,6 +749,8 @@ def segmentation_measurement_quality(quality):
     grid_rows = int(quality.get("grid_rows") or 0)
     grid_columns = int(quality.get("grid_columns") or 0)
     regularized = bool(quality.get("grid_regularized"))
+    preserve_geometry = bool(quality.get("preserve_observed_window_geometry"))
+    final_windows = int(quality.get("final_window_components") or 0)
     reason = quality.get("grid_regularization_reason")
 
     issues = []
@@ -722,11 +758,11 @@ def segmentation_measurement_quality(quality):
         issues.append("facade-mask-too-small")
     if facade_coverage > 85:
         issues.append("facade-mask-too-large")
-    if dino_windows < 4:
+    if dino_windows < 4 and final_windows < 4:
         issues.append("few-direct-window-detections")
     if grid_rows < 2 or grid_columns < 2:
         issues.append("weak-window-grid")
-    if not regularized:
+    if not regularized and not preserve_geometry:
         issues.append(f"grid-not-regularized:{reason}")
 
     if not issues:
@@ -737,7 +773,7 @@ def segmentation_measurement_quality(quality):
             "message": "Facade/window segmentation passed automatic geometry checks.",
         }
 
-    if len(issues) <= 2 and dino_windows >= 4:
+    if len(issues) <= 2 and max(dino_windows, final_windows) >= 4:
         return {
             "status": "review_recommended",
             "confidence": 0.65,
@@ -1046,6 +1082,10 @@ def segment_facade_components(
     cv_window_min_area_fraction: float = 0.00020,
     cv_window_max_area_fraction: float = 0.02000,
     reconstructed_mask=None,
+    preserve_observed_window_geometry: bool = True,
+    infer_windows_in_reconstructed_regions: bool = True,
+    use_window_grid_regularization: bool = False,
+    use_uniform_window_grid: bool = False,
 ):
     """Create facade, window, door, and balcony masks."""
 
@@ -1105,10 +1145,10 @@ def segment_facade_components(
     clean_boxes, clean_logits, clean_phrases = [], [], []
     for box, logit, phrase in zip(boxes, logits, phrases):
         cx, cy, box_width, box_height = box.tolist()
-        phrase_lower = phrase.lower()
-        if "balcony" in phrase_lower and (box_width * box_height > 0.20 or box_height > 0.60):
+        semantic_class = _semantic_phrase_class(phrase)
+        if semantic_class == "balcony" and (box_width * box_height > 0.20 or box_height > 0.60):
             continue
-        if "window" in phrase_lower and (box_width > 0.20 or box_width * box_height > 0.08):
+        if semantic_class == "window" and (box_width > 0.48 or box_width * box_height > 0.18):
             continue
         clean_boxes.append(box)
         clean_logits.append(logit)
@@ -1125,21 +1165,21 @@ def segment_facade_components(
 
     for box, phrase in zip(boxes, phrases):
         input_box = decode_box(box.cpu().numpy(), height, width)
-        phrase_lower = phrase.lower()
-        if "balcony" in phrase_lower:
+        semantic_class = _semantic_phrase_class(phrase)
+        if semantic_class == "balcony":
             masks, scores, _ = predictor.predict(box=input_box, multimask_output=True)
             box_area_px = (input_box[2] - input_box[0]) * (input_box[3] - input_box[1])
             valid = [(mask, score) for mask, score in zip(masks, scores) if 100 < mask.sum() < 0.50 * box_area_px]
             best = min(valid, key=lambda item: item[0].sum())[0] if valid else masks[np.argmin([mask.sum() for mask in masks])]
             balcony_mask |= best
-        elif "window" in phrase_lower:
+        elif semantic_class == "window":
             mask, _, _ = predictor.predict(box=input_box, multimask_output=False)
             window_mask |= mask[0]
-        elif "door" in phrase_lower or "entrance" in phrase_lower:
+        elif semantic_class == "door":
             mask, _, _ = predictor.predict(box=input_box, multimask_output=False)
             door_mask |= mask[0]
 
-    window_count = sum(1 for phrase in phrases if "window" in phrase.lower())
+    window_count = sum(1 for phrase in phrases if _semantic_phrase_class(phrase) == "window")
     window_mask, dino_box_window_seeds_added = _add_dino_window_box_seeds(
         window_mask,
         boxes,
@@ -1171,19 +1211,56 @@ def segment_facade_components(
             reconstructed_mask=reconstructed_mask,
         )
     raw_window_mask = window_mask.copy()
-    window_mask, grid_quality = _regularize_window_grid(
-        window_mask,
-        facade_mask,
-        door_mask,
-        balcony_mask,
-        reconstructed_mask=reconstructed_mask,
-    )
-    grid_inferred_windows_added = grid_quality["regularized_inferred_windows"]
+    grid_inferred_windows_added = 0
+    if infer_windows_in_reconstructed_regions:
+        window_mask, grid_inferred_windows_added = _add_grid_inferred_windows(
+            window_mask,
+            facade_mask,
+            door_mask,
+            balcony_mask,
+            reconstructed_mask=reconstructed_mask,
+        )
 
-    # Final pass: replace scattered/irregular blobs with uniform rectangles.
-    # This is the step that produces publication-quality aligned window grids.
-    window_mask, uniform_quality = _build_uniform_window_grid(
-        window_mask, facade_mask, door_mask, balcony_mask
+    grid_quality = {
+        "regularized": False,
+        "regularized_windows": 0,
+        "regularized_inferred_windows": grid_inferred_windows_added,
+        "grid_rows": 0,
+        "grid_columns": 0,
+        "reason": "disabled-preserve-observed-geometry",
+    }
+    if use_window_grid_regularization and not preserve_observed_window_geometry:
+        window_mask, grid_quality = _regularize_window_grid(
+            window_mask,
+            facade_mask,
+            door_mask,
+            balcony_mask,
+            reconstructed_mask=reconstructed_mask,
+        )
+
+    uniform_quality = {
+        "uniform_grid": False,
+        "reason": "disabled-preserve-observed-geometry",
+    }
+    if use_uniform_window_grid and not preserve_observed_window_geometry:
+        window_mask, uniform_quality = _build_uniform_window_grid(
+            window_mask, facade_mask, door_mask, balcony_mask
+        )
+
+    final_components = _component_boxes_from_mask(window_mask, facade_mask)
+    final_widths = [component["w"] for component in final_components]
+    final_heights = [component["h"] for component in final_components]
+    final_rows = _cluster_positions(
+        [component["cy"] for component in final_components],
+        tolerance=max(8.0, float(np.median(final_heights)) * 0.75)
+        if final_heights
+        else 8.0,
+    )
+    final_columns = _cluster_positions(
+        [component["cx"] for component in final_components],
+        tolerance=max(8.0, float(np.median(final_widths)) * 0.75)
+        if final_widths
+        else 8.0,
     )
 
     quality = {
@@ -1196,12 +1273,21 @@ def segment_facade_components(
         "grid_regularization_reason": grid_quality["reason"],
         "grid_regularized_windows": grid_quality["regularized_windows"],
         "grid_regularized_inferred_windows": grid_quality["regularized_inferred_windows"],
-        "grid_rows": uniform_quality.get("grid_rows", grid_quality["grid_rows"]),
-        "grid_columns": uniform_quality.get("grid_cols", grid_quality["grid_columns"]),
+        "grid_rows": uniform_quality.get("grid_rows", grid_quality["grid_rows"]) or len(final_rows),
+        "grid_columns": uniform_quality.get("grid_cols", grid_quality["grid_columns"]) or len(final_columns),
         "median_window_width_px": uniform_quality.get("window_w_px", grid_quality.get("median_window_width_px")),
         "median_window_height_px": uniform_quality.get("window_h_px", grid_quality.get("median_window_height_px")),
         "uniform_grid_applied": uniform_quality.get("uniform_grid", False),
         "uniform_grid_windows": uniform_quality.get("windows_drawn", 0),
+        "final_window_components": len(final_components),
+        "preserve_observed_window_geometry": preserve_observed_window_geometry,
+        "window_mask_source": (
+            "observed-semantic-masks-plus-hidden-region-inference"
+            if infer_windows_in_reconstructed_regions
+            else "observed-semantic-masks"
+        ),
+        "aligned_image_shape": tuple(aligned_facade.shape),
+        "window_mask_shape": tuple(window_mask.shape),
         "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
         "facade_mask_source": facade_source,
     }

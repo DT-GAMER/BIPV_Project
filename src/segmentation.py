@@ -505,6 +505,164 @@ def _add_grid_inferred_windows(
     return inferred, added
 
 
+def _rectangle_border_mask(shape, x1, y1, x2, y2, thickness: int = 2):
+    """Return a rectangular border mask for image-evidence checks."""
+
+    border = np.zeros(shape, dtype=np.uint8)
+    cv2.rectangle(border, (x1, y1), (x2 - 1, y2 - 1), 1, thickness)
+    return border.astype(bool)
+
+
+def _add_evidence_supported_windows(
+    aligned_facade,
+    existing_window_mask,
+    facade_mask,
+    door_mask,
+    balcony_mask,
+    reconstructed_mask=None,
+):
+    """Complete repeated visible windows only when image evidence supports them.
+
+    This intentionally does not create a complete uniform grid. It considers a
+    missing row/column intersection only when both axes have repeated support,
+    then requires contrast or rectangular edge evidence in the source image.
+    """
+
+    boxes = _component_boxes_from_mask(existing_window_mask, facade_mask)
+    if len(boxes) < 6:
+        return existing_window_mask, 0, {"status": "not-enough-observed-windows"}
+
+    median_w = float(np.median([box["w"] for box in boxes]))
+    median_h = float(np.median([box["h"] for box in boxes]))
+    if median_w < 4 or median_h < 5:
+        return existing_window_mask, 0, {"status": "invalid-window-size"}
+
+    x_centers = _cluster_positions(
+        [box["cx"] for box in boxes],
+        tolerance=max(7.0, median_w * 0.60),
+    )
+    y_centers = _cluster_positions(
+        [box["cy"] for box in boxes],
+        tolerance=max(7.0, median_h * 0.60),
+    )
+    if len(x_centers) < 3 or len(y_centers) < 2:
+        return existing_window_mask, 0, {"status": "weak-repeated-structure"}
+
+    grid_hits = set()
+    row_support = {row: 0 for row in range(len(y_centers))}
+    col_support = {col: 0 for col in range(len(x_centers))}
+    row_sizes = {row: [] for row in range(len(y_centers))}
+    col_sizes = {col: [] for col in range(len(x_centers))}
+    for box in boxes:
+        row = int(np.argmin([abs(box["cy"] - center) for center in y_centers]))
+        col = int(np.argmin([abs(box["cx"] - center) for center in x_centers]))
+        if abs(box["cy"] - y_centers[row]) > max(9.0, median_h * 0.9):
+            continue
+        if abs(box["cx"] - x_centers[col]) > max(9.0, median_w * 0.9):
+            continue
+        grid_hits.add((row, col))
+        row_support[row] += 1
+        col_support[col] += 1
+        row_sizes[row].append((box["w"], box["h"]))
+        col_sizes[col].append((box["w"], box["h"]))
+
+    gray = cv2.cvtColor(aligned_facade, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 45, 130)
+    height, width = gray.shape
+    occupied = existing_window_mask | door_mask | balcony_mask
+    completed = existing_window_mask.copy()
+    added = 0
+    checked = 0
+
+    min_row_support = max(2, int(np.ceil(len(x_centers) * 0.35)))
+    min_col_support = max(2, int(np.ceil(len(y_centers) * 0.35)))
+    for row, cy in enumerate(y_centers):
+        for col, cx in enumerate(x_centers):
+            if (row, col) in grid_hits:
+                continue
+            if row_support[row] < min_row_support or col_support[col] < min_col_support:
+                continue
+
+            local_sizes = row_sizes[row] + col_sizes[col]
+            candidate_w = int(round(np.median([size[0] for size in local_sizes])))
+            candidate_h = int(round(np.median([size[1] for size in local_sizes])))
+            candidate_w = max(4, min(candidate_w, int(width * 0.20)))
+            candidate_h = max(5, min(candidate_h, int(height * 0.25)))
+            x1, y1, x2, y2 = _clip_int_box(
+                cx - candidate_w / 2,
+                cy - candidate_h / 2,
+                cx + candidate_w / 2,
+                cy + candidate_h / 2,
+                height,
+                width,
+            )
+            candidate = np.zeros((height, width), dtype=bool)
+            candidate[y1:y2, x1:x2] = True
+            candidate_area = int(candidate.sum())
+            if candidate_area == 0:
+                continue
+            if (candidate & facade_mask).sum() / candidate_area < 0.82:
+                continue
+            if (candidate & occupied).sum() / candidate_area > 0.18:
+                continue
+            if reconstructed_mask is not None:
+                # Hidden openings are handled by the separate reconstructed-area
+                # inference, where direct visual evidence is unavailable.
+                if (candidate & reconstructed_mask).sum() / candidate_area > 0.20:
+                    continue
+
+            checked += 1
+            pad_x = max(3, int(candidate_w * 0.30))
+            pad_y = max(3, int(candidate_h * 0.30))
+            rx1, ry1, rx2, ry2 = _clip_int_box(
+                x1 - pad_x,
+                y1 - pad_y,
+                x2 + pad_x,
+                y2 + pad_y,
+                height,
+                width,
+            )
+            ring = np.zeros((height, width), dtype=bool)
+            ring[ry1:ry2, rx1:rx2] = True
+            ring &= ~candidate
+            ring &= facade_mask
+            if ring.sum() < 10:
+                continue
+
+            interior_median = float(np.median(gray[candidate]))
+            ring_median = float(np.median(gray[ring]))
+            intensity_contrast = abs(interior_median - ring_median)
+            border = _rectangle_border_mask(
+                (height, width),
+                x1,
+                y1,
+                x2,
+                y2,
+                thickness=max(2, int(min(candidate_w, candidate_h) * 0.10)),
+            )
+            edge_support = float((edges.astype(bool) & border).sum() / max(border.sum(), 1))
+
+            # Require two independent signals for weak candidates, or one very
+            # strong rectangular/contrast signal.
+            contrast_ok = intensity_contrast >= 11.0
+            edge_ok = edge_support >= 0.13
+            strong_signal = intensity_contrast >= 20.0 or edge_support >= 0.24
+            if not strong_signal and not (contrast_ok and edge_ok):
+                continue
+
+            completed |= candidate & facade_mask
+            occupied |= candidate
+            added += 1
+
+    return completed, added, {
+        "status": "ok",
+        "grid_rows": len(y_centers),
+        "grid_columns": len(x_centers),
+        "candidates_checked": checked,
+        "windows_added": added,
+    }
+
+
 def _nearest_center(value, centers):
     if not centers:
         return None
@@ -1084,6 +1242,7 @@ def segment_facade_components(
     reconstructed_mask=None,
     preserve_observed_window_geometry: bool = True,
     infer_windows_in_reconstructed_regions: bool = True,
+    infer_evidence_supported_windows: bool = True,
     use_window_grid_regularization: bool = False,
     use_uniform_window_grid: bool = False,
 ):
@@ -1221,6 +1380,18 @@ def segment_facade_components(
             reconstructed_mask=reconstructed_mask,
         )
 
+    evidence_windows_added = 0
+    evidence_quality = {"status": "disabled", "windows_added": 0}
+    if infer_evidence_supported_windows:
+        window_mask, evidence_windows_added, evidence_quality = _add_evidence_supported_windows(
+            aligned_facade,
+            window_mask,
+            facade_mask,
+            door_mask,
+            balcony_mask,
+            reconstructed_mask=reconstructed_mask,
+        )
+
     grid_quality = {
         "regularized": False,
         "regularized_windows": 0,
@@ -1269,6 +1440,8 @@ def segment_facade_components(
         "sam_fallback_windows_added": fallback_windows_added,
         "cv_fallback_windows_added": cv_windows_added,
         "grid_inferred_windows_added": grid_inferred_windows_added,
+        "evidence_supported_windows_added": evidence_windows_added,
+        "evidence_supported_completion": evidence_quality,
         "grid_regularized": grid_quality["regularized"],
         "grid_regularization_reason": grid_quality["reason"],
         "grid_regularized_windows": grid_quality["regularized_windows"],
@@ -1282,8 +1455,8 @@ def segment_facade_components(
         "final_window_components": len(final_components),
         "preserve_observed_window_geometry": preserve_observed_window_geometry,
         "window_mask_source": (
-            "observed-semantic-masks-plus-hidden-region-inference"
-            if infer_windows_in_reconstructed_regions
+            "observed-semantic-masks-plus-conservative-completion"
+            if infer_windows_in_reconstructed_regions or infer_evidence_supported_windows
             else "observed-semantic-masks"
         ),
         "aligned_image_shape": tuple(aligned_facade.shape),

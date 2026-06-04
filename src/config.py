@@ -89,6 +89,7 @@ class AnalysisConfig:
     cv_window_max_area_fraction: float = 0.02000
     preserve_observed_window_geometry: bool = True
     infer_windows_in_reconstructed_regions: bool = True
+    infer_evidence_supported_windows: bool = True
     use_window_grid_regularization: bool = False
     use_uniform_window_grid: bool = False
     dino_box_threshold: float = 0.25

@@ -624,6 +624,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         reconstructed_mask=reconstructed_mask,
         preserve_observed_window_geometry=config.preserve_observed_window_geometry,
         infer_windows_in_reconstructed_regions=config.infer_windows_in_reconstructed_regions,
+        infer_evidence_supported_windows=config.infer_evidence_supported_windows,
         use_window_grid_regularization=config.use_window_grid_regularization,
         use_uniform_window_grid=config.use_uniform_window_grid,
     )

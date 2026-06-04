@@ -819,6 +819,27 @@ def _clean_facade_boundary(facade_mask: np.ndarray) -> np.ndarray:
     return result
 
 
+def _merge_close_centers(centers: list, merge_ratio: float = 0.55) -> list:
+    """Merge centres closer than merge_ratio × median gap.
+
+    Converts pane-level column/row centres into window-group-level centres.
+    Example: 8 pane columns at spacing 40 px → 4 window columns at 80 px.
+    """
+    if len(centers) < 2:
+        return centers
+    sorted_c = sorted(float(c) for c in centers)
+    gaps = np.diff(sorted_c)
+    median_gap = float(np.median(gaps))
+    threshold = median_gap * merge_ratio
+    merged = [sorted_c[0]]
+    for c in sorted_c[1:]:
+        if c - merged[-1] < threshold:
+            merged[-1] = (merged[-1] + c) / 2.0
+        else:
+            merged.append(c)
+    return merged
+
+
 def _build_uniform_window_grid(
     window_mask: np.ndarray,
     facade_mask: np.ndarray,

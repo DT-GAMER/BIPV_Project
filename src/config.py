@@ -92,6 +92,8 @@ class AnalysisConfig:
     infer_evidence_supported_windows: bool = True
     use_window_grid_regularization: bool = False
     use_uniform_window_grid: bool = False
+    validate_facade_rectification: bool = True
+    rectification_min_improvement_deg: float = 0.75
     dino_box_threshold: float = 0.25
     dino_text_threshold: float = 0.20
     random_seed: int = 42

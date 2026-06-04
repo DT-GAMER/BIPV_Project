@@ -597,6 +597,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         keep_boxes,
         preserve_original_size=True,
         facade_quad=facade_quad,
+        validate_rectification=config.validate_facade_rectification,
+        min_improvement_deg=config.rectification_min_improvement_deg,
     )
     aligned_facade = rectification.aligned_facade
     transform_matrix = rectification.transform_matrix

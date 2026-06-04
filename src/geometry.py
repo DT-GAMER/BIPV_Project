@@ -351,6 +351,158 @@ def _source_corner_quality(src_corners, image_shape, vanishing_point, vertical_l
     }
 
 
+def _structural_alignment_metrics(image, region_mask=None):
+    """Measure how closely strong facade lines align to horizontal/vertical axes."""
+
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    if region_mask is not None:
+        edges &= region_mask.astype(np.uint8) * 255
+
+    min_length = max(25, int(min(image.shape[:2]) * 0.08))
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=35,
+        minLineLength=min_length,
+        maxLineGap=12,
+    )
+    deviations = []
+    horizontal = 0
+    vertical = 0
+    if lines is not None:
+        for line in lines[:, 0]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            dx, dy = x2 - x1, y2 - y1
+            length = float(np.hypot(dx, dy))
+            if length < min_length:
+                continue
+            angle = abs(float(np.degrees(np.arctan2(dy, dx)))) % 180
+            deviation = min(angle, abs(90 - angle), abs(180 - angle))
+            if deviation > 30:
+                continue
+            if min(angle, abs(180 - angle)) <= 30:
+                horizontal += 1
+            elif abs(90 - angle) <= 30:
+                vertical += 1
+            deviations.append((deviation, length))
+
+    if not deviations:
+        return {
+            "score_deg": None,
+            "line_count": 0,
+            "horizontal_lines": 0,
+            "vertical_lines": 0,
+        }
+
+    weighted_score = float(
+        sum(deviation * length for deviation, length in deviations)
+        / max(sum(length for _, length in deviations), 1.0)
+    )
+    return {
+        "score_deg": weighted_score,
+        "line_count": len(deviations),
+        "horizontal_lines": horizontal,
+        "vertical_lines": vertical,
+    }
+
+
+def _identity_rectification(
+    clean_image,
+    keep_boxes,
+    pad_frac,
+    candidate_quality,
+    reason,
+):
+    """Return the unchanged facade when a proposed homography is unreliable."""
+
+    height, width = clean_image.shape[:2]
+    x1, y1, x2, y2 = _axis_aligned_facade_bbox(clean_image, keep_boxes, pad_frac)
+    src = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+    content_mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(content_mask, [src.astype(np.int32)], 1)
+    quality = {
+        **candidate_quality,
+        "candidate_source_corners": candidate_quality.get("source_corners"),
+        "rectification_applied": False,
+        "status": "rejected",
+        "rectification_rejection_reason": reason,
+        "perspective_method": "identity-fallback",
+        "source_corners": src.astype(float).round(2).tolist(),
+        "output_mode": "identity-preserve-original-size",
+        "aligned_shape": tuple(clean_image.shape),
+        "transform_matrix": np.eye(3, dtype=float).tolist(),
+    }
+    return FacadeRectificationResult(
+        aligned_facade=clean_image.copy(),
+        transform_matrix=np.eye(3, dtype=np.float32),
+        source_corners=src,
+        content_mask=content_mask.astype(bool),
+        quality=quality,
+    )
+
+
+def _validate_rectification(
+    clean_image,
+    aligned_facade,
+    transform_matrix,
+    src_corners,
+    content_mask,
+    quality,
+    keep_boxes,
+    pad_frac,
+    min_improvement_deg,
+):
+    """Accept a homography only when it measurably improves facade structure."""
+
+    height, width = clean_image.shape[:2]
+    source_region = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(source_region, [src_corners.astype(np.int32)], 1)
+    before = _structural_alignment_metrics(clean_image, source_region.astype(bool))
+    after = _structural_alignment_metrics(aligned_facade, content_mask)
+    before_score = before["score_deg"]
+    after_score = after["score_deg"]
+    improvement = (
+        None
+        if before_score is None or after_score is None
+        else float(before_score - after_score)
+    )
+    validation = {
+        "before": before,
+        "after": after,
+        "improvement_deg": improvement,
+        "minimum_improvement_deg": float(min_improvement_deg),
+    }
+    quality = {**quality, "rectification_validation": validation}
+
+    # Insufficient line evidence means a homography cannot be trusted.
+    if before["line_count"] < 4 or after["line_count"] < 4:
+        return _identity_rectification(
+            clean_image,
+            keep_boxes,
+            pad_frac,
+            quality,
+            "insufficient-structural-line-evidence",
+        )
+    if improvement is None or improvement < min_improvement_deg:
+        return _identity_rectification(
+            clean_image,
+            keep_boxes,
+            pad_frac,
+            quality,
+            "homography-did-not-improve-axis-alignment",
+        )
+
+    return FacadeRectificationResult(
+        aligned_facade=aligned_facade,
+        transform_matrix=transform_matrix,
+        source_corners=src_corners,
+        content_mask=content_mask,
+        quality=quality,
+    )
+
+
 def _order_corners(pts: np.ndarray) -> np.ndarray:
     """Order 4 points as [TL, TR, BR, BL] using sum/diff of coordinates."""
     s = pts.sum(axis=1)          # x+y: TL=min, BR=max
@@ -411,6 +563,8 @@ def rectify_facade(
     pad_frac: float = 0.02,
     min_line_length: int = 80,
     facade_quad: np.ndarray | None = None,
+    validate_rectification: bool = True,
+    min_improvement_deg: float = 0.75,
 ) -> FacadeRectificationResult:
     """Run the full high-level facade rectification stage.
 
@@ -470,13 +624,26 @@ def rectify_facade(
             "preserve_building_footprint": preserve_original_size,
             "transform_matrix": transform_matrix.astype(float).round(6).tolist(),
         })
-        return FacadeRectificationResult(
+        result = FacadeRectificationResult(
             aligned_facade=aligned_facade,
             transform_matrix=transform_matrix,
             source_corners=src_corners,
             content_mask=content_mask,
             quality=quality,
         )
+        if validate_rectification and preserve_original_size:
+            return _validate_rectification(
+                clean_image,
+                result.aligned_facade,
+                result.transform_matrix,
+                result.source_corners,
+                result.content_mask,
+                result.quality,
+                keep_boxes,
+                pad_frac,
+                min_improvement_deg,
+            )
+        return result
 
     # Fallback: existing line-based approach
     if preserve_original_size:
@@ -514,13 +681,26 @@ def rectify_facade(
         }
     )
 
-    return FacadeRectificationResult(
+    result = FacadeRectificationResult(
         aligned_facade=aligned_facade,
         transform_matrix=transform_matrix,
         source_corners=src_corners,
         content_mask=content_mask,
         quality=quality,
     )
+    if validate_rectification and preserve_original_size:
+        return _validate_rectification(
+            clean_image,
+            result.aligned_facade,
+            result.transform_matrix,
+            result.source_corners,
+            result.content_mask,
+            result.quality,
+            keep_boxes,
+            pad_frac,
+            min_improvement_deg,
+        )
+    return result
 
 
 def validate_google_earth_dimensions(

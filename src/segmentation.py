@@ -876,8 +876,8 @@ def _build_uniform_window_grid(
 
     # Tighter filter: 50 %–180 % of the primary-derived median
     valid = [c for c in components
-             if 0.50 * raw_mw <= c["w"] <= 1.80 * raw_mw
-             and 0.50 * raw_mh <= c["h"] <= 1.80 * raw_mh]
+             if 0.40 * raw_mw <= c["w"] <= 2.00 * raw_mw
+             and 0.40 * raw_mh <= c["h"] <= 2.00 * raw_mh]
     if len(valid) < 4:
         valid = primary
 
@@ -893,27 +893,22 @@ def _build_uniform_window_grid(
     if not row_centers or not col_centers:
         return window_mask, {"uniform_grid": False, "reason": "clustering-failed"}
 
-    # Re-estimate window size from the actual grid spacing.
-    # Detected components are often individual panes; the floor pitch (row gap)
-    # and column pitch give the true opening dimensions.
-    # Window height = 65-90 % of floor pitch; width = 68-90 % of column pitch.
+    # Merge centres that are too close together.
+    # Converts pane-level column/row positions into window-group positions.
+    col_centers = _merge_close_centers(col_centers, merge_ratio=0.55)
+    row_centers = _merge_close_centers(row_centers, merge_ratio=0.50)
+
+    # Bump up window size from grid spacing when pane-level detection made it
+    # too small. Only ever increases uni_h/uni_w — never reduces a good estimate.
     if len(row_centers) >= 2:
         med_row_gap = float(np.median(np.diff(np.array(sorted(row_centers)))))
         if med_row_gap > 0:
-            uni_h = int(np.clip(
-                max(uni_h, round(med_row_gap * 0.65)),
-                8,
-                round(med_row_gap * 0.90),
-            ))
+            uni_h = max(uni_h, int(round(med_row_gap * 0.60)))
 
     if len(col_centers) >= 2:
         med_col_gap = float(np.median(np.diff(np.array(sorted(col_centers)))))
         if med_col_gap > 0:
-            uni_w = int(np.clip(
-                max(uni_w, round(med_col_gap * 0.68)),
-                6,
-                round(med_col_gap * 0.90),
-            ))
+            uni_w = max(uni_w, int(round(med_col_gap * 0.65)))
 
     # Mark which (row, col) grid cells have actual detection support
     occupied = set()
@@ -937,8 +932,8 @@ def _build_uniform_window_grid(
     max_col = max(col_sup.values())
     confirmed = {
         (r, c) for r, c in occupied
-        if row_sup.get(r, 0) >= max(1, max_row * 0.20)
-        and col_sup.get(c, 0) >= max(1, max_col * 0.20)
+        if row_sup.get(r, 0) >= max(1, max_row * 0.15)
+        and col_sup.get(c, 0) >= max(1, max_col * 0.15)
     }
     if len(confirmed) < 4:
         confirmed = occupied
@@ -957,7 +952,7 @@ def _build_uniform_window_grid(
             continue
         cell = np.zeros((height, width), dtype=bool)
         cell[y1:y2, x1:x2] = True
-        if (cell & facade_mask).sum() / max(cell.sum(), 1) < 0.55:
+        if (cell & facade_mask).sum() / max(cell.sum(), 1) < 0.45:
             continue
         if (cell & blocked).sum() / max(cell.sum(), 1) > 0.25:
             continue

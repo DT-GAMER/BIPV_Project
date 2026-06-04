@@ -453,6 +453,7 @@ def _validate_rectification(
     keep_boxes,
     pad_frac,
     min_improvement_deg,
+    max_axis_deviation_deg,
 ):
     """Accept a homography only when it measurably improves facade structure."""
 
@@ -473,6 +474,7 @@ def _validate_rectification(
         "after": after,
         "improvement_deg": improvement,
         "minimum_improvement_deg": float(min_improvement_deg),
+        "maximum_after_axis_deviation_deg": float(max_axis_deviation_deg),
     }
     quality = {**quality, "rectification_validation": validation}
 
@@ -492,6 +494,14 @@ def _validate_rectification(
             pad_frac,
             quality,
             "homography-did-not-improve-axis-alignment",
+        )
+    if after_score is None or after_score > max_axis_deviation_deg:
+        return _identity_rectification(
+            clean_image,
+            keep_boxes,
+            pad_frac,
+            quality,
+            "rectified-facade-remains-off-axis",
         )
 
     return FacadeRectificationResult(
@@ -565,6 +575,7 @@ def rectify_facade(
     facade_quad: np.ndarray | None = None,
     validate_rectification: bool = True,
     min_improvement_deg: float = 0.75,
+    max_axis_deviation_deg: float = 6.0,
 ) -> FacadeRectificationResult:
     """Run the full high-level facade rectification stage.
 
@@ -642,6 +653,7 @@ def rectify_facade(
                 keep_boxes,
                 pad_frac,
                 min_improvement_deg,
+                max_axis_deviation_deg,
             )
         return result
 
@@ -699,6 +711,7 @@ def rectify_facade(
             keep_boxes,
             pad_frac,
             min_improvement_deg,
+            max_axis_deviation_deg,
         )
     return result
 

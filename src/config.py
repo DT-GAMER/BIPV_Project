@@ -94,6 +94,7 @@ class AnalysisConfig:
     use_uniform_window_grid: bool = False
     validate_facade_rectification: bool = True
     rectification_min_improvement_deg: float = 0.75
+    rectification_max_axis_deviation_deg: float = 6.0
     dino_box_threshold: float = 0.25
     dino_text_threshold: float = 0.20
     random_seed: int = 42

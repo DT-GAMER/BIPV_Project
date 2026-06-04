@@ -146,7 +146,9 @@ def _add_sam_window_fallback(
             continue
 
         area = segment.sum()
-        if not (0.0015 * facade_area <= area <= 0.060 * facade_area):
+        # Large facades can contain many genuinely small windows. The previous
+        # 0.15% floor rejected most of them before shape checks were reached.
+        if not (0.00020 * facade_area <= area <= 0.060 * facade_area):
             continue
 
         inside = (segment & facade_mask).sum()
@@ -1321,6 +1323,7 @@ def segment_facade_components(
     window_mask = np.zeros((height, width), dtype=bool)
     door_mask = np.zeros((height, width), dtype=bool)
     balcony_mask = np.zeros((height, width), dtype=bool)
+    roof_mask = np.zeros((height, width), dtype=bool)
 
     for box, phrase in zip(boxes, phrases):
         input_box = decode_box(box.cpu().numpy(), height, width)
@@ -1337,6 +1340,23 @@ def segment_facade_components(
         elif semantic_class == "door":
             mask, _, _ = predictor.predict(box=input_box, multimask_output=False)
             door_mask |= mask[0]
+        elif semantic_class == "roof":
+            masks, scores, _ = predictor.predict(box=input_box, multimask_output=True)
+            box_area_px = max(
+                (input_box[2] - input_box[0]) * (input_box[3] - input_box[1]),
+                1,
+            )
+            valid = [
+                (mask, score)
+                for mask, score in zip(masks, scores)
+                if 30 < mask.sum() < 1.50 * box_area_px
+            ]
+            best = (
+                max(valid, key=lambda item: item[1])[0]
+                if valid
+                else masks[int(np.argmax(scores))]
+            )
+            roof_mask |= best & facade_mask
 
     window_count = sum(1 for phrase in phrases if _semantic_phrase_class(phrase) == "window")
     window_mask, dino_box_window_seeds_added = _add_dino_window_box_seeds(
@@ -1461,6 +1481,7 @@ def segment_facade_components(
         ),
         "aligned_image_shape": tuple(aligned_facade.shape),
         "window_mask_shape": tuple(window_mask.shape),
+        "roof_exclusion_pixels": int(roof_mask.sum()),
         "facade_coverage_percent": 100 * facade_mask.sum() / max(height * width, 1),
         "facade_mask_source": facade_source,
     }
@@ -1472,6 +1493,7 @@ def segment_facade_components(
         "raw_window_mask": raw_window_mask,
         "door_mask": door_mask,
         "balcony_mask": balcony_mask,
+        "roof_mask": roof_mask,
         "boxes": boxes,
         "logits": logits,
         "phrases": phrases,

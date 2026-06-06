@@ -170,8 +170,8 @@ def _draw_method_cell(axis, row, stage_name):
     if row < 4:
         axis.annotate(
             "",
-            xy=(0.86, 0.18),
-            xytext=(0.86, -0.10),
+            xy=(0.86, -0.10),
+            xytext=(0.86, 0.18),
             xycoords="axes fraction",
             arrowprops={"arrowstyle": "->", "color": "#2f7da4", "linewidth": 1.5},
         )

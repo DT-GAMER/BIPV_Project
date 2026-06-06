@@ -19,12 +19,15 @@ def estimate_real_world_scale(
 ):
     """Estimate real-world facade dimensions.
 
-    If Google Earth dimensions are explicitly required, they become the scale
-    source. Otherwise, the default mode is automatic image-based estimation, with
-    optional Google Earth values used only for validation.
+    If Google Earth dimensions are supplied, they become the metric scale source.
+    Otherwise, the default mode is automatic image-based estimation. Setting
+    require_google_earth_dimensions=True only controls whether missing reference
+    dimensions should raise an error.
     """
 
-    if not require_google_earth_dimensions:
+    has_google_earth_reference = ge_width_m is not None and ge_height_m is not None
+
+    if not require_google_earth_dimensions and not has_google_earth_reference:
         scale_estimate = estimate_scale_from_image(
             aligned_facade,
             facade_mask,
@@ -45,6 +48,8 @@ def estimate_real_world_scale(
             "scale_method": scale_estimate["method"],
             "floor_count_source": scale_estimate["floor_count_source"],
             "floor_count_candidates": scale_estimate["floor_count_candidates"],
+            "floor_height_m": scale_estimate["floor_height_m"],
+            "floor_height_source": scale_estimate["floor_height_source"],
         }
         return dimensions, validation
 
@@ -91,5 +96,7 @@ def estimate_real_world_scale(
         "scale_method": "google-earth-calibrated-image-scale",
         "floor_count_source": image_scale_estimate["floor_count_source"],
         "floor_count_candidates": image_scale_estimate["floor_count_candidates"],
+        "floor_height_m": image_scale_estimate["floor_height_m"],
+        "floor_height_source": image_scale_estimate["floor_height_source"],
     }
     return dimensions, validation

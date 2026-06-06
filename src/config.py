@@ -57,7 +57,7 @@ class AnalysisConfig:
     ge_height_m: float | None = None
     require_google_earth_dimensions: bool = False
     known_floors: int | None = None
-    floor_height_m: float = 3.0
+    floor_height_m: float = 3.3
     panel_efficiency: float = 0.20
     panel_area_m2: float = 1.7
     watts_per_panel: int = 350

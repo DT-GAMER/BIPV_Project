@@ -180,13 +180,17 @@ def _estimate_floor_height_m(window_boxes_np, default_floor_height_m: float) -> 
 
     median_window_h_norm = float(np.median(window_boxes_np[:, 3]))
 
-    # Typical window height is around 1.2-1.6 m. The ratio between window height
-    # and floor height often lands near 0.35-0.55 for residential/apartment blocks.
-    if median_window_h_norm < 0.035:
-        return max(default_floor_height_m, 3.2), "small-window-office-prior"
-    if median_window_h_norm > 0.090:
-        return min(default_floor_height_m, 2.8), "large-window-residential-prior"
-    return default_floor_height_m, "default-floor-height"
+    # A single street-level image has no absolute ruler, so this is deliberately
+    # a conservative architectural prior rather than a claim of measurement.
+    # Edinburgh/UK urban facades commonly have floor-to-floor heights above
+    # 3.0 m, especially where the ground floor is commercial or older masonry.
+    if median_window_h_norm < 0.025:
+        return max(default_floor_height_m, 3.6), "small-opening-high-rise-prior"
+    if median_window_h_norm < 0.040:
+        return max(default_floor_height_m, 3.4), "small-window-urban-prior"
+    if median_window_h_norm > 0.120:
+        return min(default_floor_height_m, 3.1), "large-window-low-rise-prior"
+    return default_floor_height_m, "urban-default-floor-height"
 
 
 def estimate_scale_from_image(

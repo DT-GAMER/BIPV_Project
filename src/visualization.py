@@ -443,6 +443,338 @@ def save_workflow_grid_image(
     return path
 
 
+def _methodology_stage_images(result):
+    """Return the eight stage images used by the circular methodology figure."""
+
+    image_rgb = result["image_rgb"]
+    obstacle_mask = result.get(
+        "obstacle_mask",
+        np.zeros(image_rgb.shape[:2], dtype=bool),
+    )
+    clean_image = result.get("clean_image", image_rgb)
+    aligned_facade = result.get("aligned_facade", clean_image)
+    segmentation = result.get("segmentation", {})
+    usable_results = result.get("usable_results", {})
+
+    facade_mask = segmentation.get(
+        "facade_mask",
+        np.zeros(aligned_facade.shape[:2], dtype=bool),
+    )
+    usable_mask = usable_results.get("usable_mask", facade_mask)
+
+    obstacle_detection = make_mask_overlay(
+        image_rgb,
+        obstacle_mask.astype(bool),
+        color=(255, 0, 0),
+        alpha=0.52,
+    )
+    obstacle_masking = make_mask_overlay(
+        image_rgb,
+        obstacle_mask.astype(bool),
+        color=(255, 255, 255),
+        alpha=0.82,
+    )
+    usable_overlay = make_mask_overlay(
+        aligned_facade,
+        usable_mask.astype(bool),
+        color=(0, 190, 0),
+        alpha=0.45,
+    )
+
+    try:
+        facade_elements = make_segmentation_alignment_image(result)
+    except KeyError:
+        facade_elements = usable_overlay
+
+    return {
+        1: image_rgb,
+        2: obstacle_detection,
+        3: obstacle_detection,
+        4: obstacle_masking,
+        5: clean_image,
+        6: aligned_facade,
+        7: facade_elements,
+        8: usable_overlay,
+    }
+
+
+def _add_methodology_card(axis, center, size, number, title, body, image, edge_color):
+    """Draw one rounded methodology stage card."""
+
+    from matplotlib.patches import Circle, FancyBboxPatch
+
+    x, y = center
+    width, height = size
+    left = x - width / 2
+    bottom = y - height / 2
+
+    card = FancyBboxPatch(
+        (left, bottom),
+        width,
+        height,
+        boxstyle="round,pad=0.012,rounding_size=0.02",
+        linewidth=1.7,
+        edgecolor=edge_color,
+        facecolor="white",
+        zorder=3,
+    )
+    axis.add_patch(card)
+
+    circle = Circle(
+        (left + 0.035, bottom + height - 0.005),
+        0.022,
+        facecolor=edge_color,
+        edgecolor="white",
+        linewidth=1.2,
+        zorder=5,
+    )
+    axis.add_patch(circle)
+    axis.text(
+        left + 0.035,
+        bottom + height - 0.005,
+        str(number),
+        ha="center",
+        va="center",
+        fontsize=9,
+        color="white",
+        weight="bold",
+        zorder=6,
+    )
+
+    axis.text(
+        left + 0.016,
+        bottom + height - 0.032,
+        title,
+        ha="left",
+        va="top",
+        fontsize=7.5,
+        color="#17324d",
+        weight="bold",
+        zorder=6,
+    )
+    axis.text(
+        left + 0.016,
+        bottom + height - 0.072,
+        body,
+        ha="left",
+        va="top",
+        fontsize=6.2,
+        color="#222222",
+        linespacing=1.15,
+        zorder=6,
+    )
+
+    thumbnail = _fit_image_to_canvas(image, canvas_size=(130, 95), background=(245, 247, 248))
+    img_w = width * 0.34
+    img_h = height * 0.58
+    img_left = left + width - img_w - 0.018
+    img_bottom = bottom + 0.028
+    axis.imshow(
+        thumbnail,
+        extent=[img_left, img_left + img_w, img_bottom, img_bottom + img_h],
+        zorder=6,
+    )
+
+
+def build_methodology_overview_figure(
+    result,
+    figsize=(11, 11),
+    title="IMAGE-BASED PIPELINE\nFOR BIPV FACADE AREA\nESTIMATION",
+):
+    """Build a circular methodology overview figure for one analysed image."""
+
+    from matplotlib.patches import Circle, FancyArrowPatch
+
+    stage_images = _methodology_stage_images(result)
+    fig, axis = plt.subplots(figsize=figsize, facecolor="white")
+    axis.set_xlim(0, 1)
+    axis.set_ylim(0, 1)
+    axis.axis("off")
+
+    positions = {
+        1: (0.50, 0.88),
+        2: (0.82, 0.70),
+        3: (0.82, 0.49),
+        4: (0.78, 0.28),
+        5: (0.50, 0.13),
+        6: (0.22, 0.28),
+        7: (0.18, 0.49),
+        8: (0.18, 0.70),
+    }
+    colors = {
+        1: "#1f4e8c",
+        2: "#2a9bb0",
+        3: "#6aa84f",
+        4: "#7bb342",
+        5: "#f0a51a",
+        6: "#f28c28",
+        7: "#d9534f",
+        8: "#8e44ad",
+    }
+    stage_text = {
+        1: (
+            "IMAGE ACQUISITION\n& PRE-PROCESSING",
+            "Street-level facade\nimage captured and\npre-processed.",
+        ),
+        2: (
+            "OBJECT DETECTION\n(GROUNDING DINO)",
+            "Zero-shot detection\nof facade elements\nand obstacles.",
+        ),
+        3: (
+            "IMAGE SEGMENTATION\n(SAM)",
+            "Pixel-level masks are\ngenerated for detected\nobjects.",
+        ),
+        4: (
+            "OBSTACLE MASKING",
+            "Urban obstacles are\nisolated before\nreconstruction.",
+        ),
+        5: (
+            "OBSTACLE REMOVAL &\nIMAGE INPAINTING",
+            "Masked regions are\nreconstructed using\ninpainting.",
+        ),
+        6: (
+            "FACADE RECTIFICATION",
+            "Perspective distortion\nis corrected for a\nfront-facing facade.",
+        ),
+        7: (
+            "FACADE ELEMENT\nSEGMENTATION",
+            "Walls, windows, doors\nand balconies are\nsegmented.",
+        ),
+        8: (
+            "USABLE BIPV AREA\nESTIMATION",
+            "Openings and margins\nare excluded to compute\ninstallable area.",
+        ),
+    }
+
+    ring_points = [
+        (0.50, 0.79),
+        (0.70, 0.75),
+        (0.86, 0.59),
+        (0.86, 0.38),
+        (0.68, 0.19),
+        (0.32, 0.19),
+        (0.14, 0.38),
+        (0.14, 0.59),
+        (0.30, 0.75),
+        (0.50, 0.79),
+    ]
+    arrow_colors = ["#2f6fa8", "#2f8f8d", "#59a14f", "#8cbf26", "#f0a51a", "#f28c28", "#c04b91", "#7e57c2", "#5b6fb0"]
+    for start, end, arrow_color in zip(ring_points[:-1], ring_points[1:], arrow_colors):
+        axis.add_patch(
+            FancyArrowPatch(
+                start,
+                end,
+                arrowstyle="-|>",
+                mutation_scale=18,
+                linewidth=4.0,
+                color=arrow_color,
+                alpha=0.82,
+                connectionstyle="arc3,rad=0.08",
+                zorder=1,
+            )
+        )
+
+    center_circle = Circle(
+        (0.5, 0.505),
+        0.17,
+        facecolor="white",
+        edgecolor="#e2e2e2",
+        linewidth=1.2,
+        zorder=2,
+    )
+    axis.add_patch(center_circle)
+    axis.text(
+        0.5,
+        0.56,
+        title,
+        ha="center",
+        va="center",
+        fontsize=10,
+        weight="bold",
+        color="#153a63",
+        linespacing=1.15,
+        zorder=4,
+    )
+    axis.text(
+        0.5,
+        0.485,
+        "From Street-Level Image to\nPVsyst-Ready Data",
+        ha="center",
+        va="center",
+        fontsize=8,
+        color="#35495e",
+        zorder=4,
+    )
+    axis.plot([0.39, 0.61], [0.435, 0.435], color="#cccccc", linewidth=1.0, zorder=4)
+    axis.text(
+        0.5,
+        0.405,
+        "FINAL OUTPUTS",
+        ha="center",
+        va="center",
+        fontsize=8,
+        weight="bold",
+        color="#153a63",
+        zorder=4,
+    )
+    axis.text(
+        0.5,
+        0.36,
+        "Usable BIPV Area   Facade Segmentation   Excel   JSON",
+        ha="center",
+        va="center",
+        fontsize=6.5,
+        color="#2f6f3e",
+        zorder=4,
+    )
+
+    card_size = (0.29, 0.145)
+    for number, center in positions.items():
+        stage_title, body = stage_text[number]
+        _add_methodology_card(
+            axis,
+            center,
+            card_size,
+            number,
+            stage_title,
+            body,
+            stage_images[number],
+            colors[number],
+        )
+
+    plt.tight_layout(pad=0.2)
+    return fig
+
+
+def show_methodology_overview(result, figsize=(11, 11)):
+    """Display a circular methodology overview for one analysed image."""
+
+    build_methodology_overview_figure(result, figsize=figsize)
+    plt.show()
+
+
+def save_methodology_overview_image(result, path: str, figsize=(11, 11), dpi: int = 300):
+    """Save a circular methodology overview figure to PNG/JPG."""
+
+    fig = build_methodology_overview_figure(result, figsize=figsize)
+    path_lower = path.lower()
+
+    if path_lower.endswith((".jpg", ".jpeg")):
+        fig.canvas.draw()
+        width, height = fig.canvas.get_width_height()
+        rgba = np.asarray(fig.canvas.buffer_rgba()).reshape((height, width, 4))
+        image_rgb = rgba[:, :, :3].copy()
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        ok = cv2.imwrite(path, image_bgr)
+        if not ok:
+            raise OSError(f"Could not save methodology overview to {path}")
+    else:
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+
+    plt.close(fig)
+    return path
+
+
 def show_bipv_scenario_bars(result, metric: str = "annual_kwh", title: str | None = None):
     """Plot paper-style BIPV scenario comparison bars."""
 

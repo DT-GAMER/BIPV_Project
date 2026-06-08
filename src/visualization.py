@@ -522,7 +522,7 @@ def _add_methodology_card(axis, center, size, number, title, body, image, edge_c
 
     circle = Circle(
         (left + 0.035, bottom + height - 0.005),
-        0.022,
+        0.026,
         facecolor=edge_color,
         edgecolor="white",
         linewidth=1.2,
@@ -535,7 +535,7 @@ def _add_methodology_card(axis, center, size, number, title, body, image, edge_c
         str(number),
         ha="center",
         va="center",
-        fontsize=9,
+        fontsize=11,
         color="white",
         weight="bold",
         zorder=6,
@@ -547,7 +547,7 @@ def _add_methodology_card(axis, center, size, number, title, body, image, edge_c
         title,
         ha="left",
         va="top",
-        fontsize=7.5,
+        fontsize=10,
         color="#17324d",
         weight="bold",
         zorder=6,
@@ -558,7 +558,7 @@ def _add_methodology_card(axis, center, size, number, title, body, image, edge_c
         body,
         ha="left",
         va="top",
-        fontsize=6.2,
+        fontsize=8.2,
         color="#222222",
         linespacing=1.15,
         zorder=6,
@@ -689,7 +689,7 @@ def build_methodology_overview_figure(
         title,
         ha="center",
         va="center",
-        fontsize=10,
+        fontsize=13,
         weight="bold",
         color="#153a63",
         linespacing=1.15,
@@ -701,7 +701,7 @@ def build_methodology_overview_figure(
         "From Street-Level Image to\nPVsyst-Ready Data",
         ha="center",
         va="center",
-        fontsize=8,
+        fontsize=10,
         color="#35495e",
         zorder=4,
     )
@@ -712,7 +712,7 @@ def build_methodology_overview_figure(
         "FINAL OUTPUTS",
         ha="center",
         va="center",
-        fontsize=8,
+        fontsize=10,
         weight="bold",
         color="#153a63",
         zorder=4,
@@ -723,12 +723,12 @@ def build_methodology_overview_figure(
         "Usable BIPV Area   Facade Segmentation   Excel   JSON",
         ha="center",
         va="center",
-        fontsize=6.5,
+        fontsize=8.2,
         color="#2f6f3e",
         zorder=4,
     )
 
-    card_size = (0.29, 0.145)
+    card_size = (0.29, 0.155)
     for number, center in positions.items():
         stage_title, body = stage_text[number]
         _add_methodology_card(

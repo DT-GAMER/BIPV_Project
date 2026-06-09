@@ -99,6 +99,8 @@ class AnalysisConfig:
     dino_text_threshold: float = 0.20
     random_seed: int = 42
     exclude_ground_floor: bool = False
+    building_type: str = "urban"  # Set to "house" for detached/low-rise pitched-roof homes.
+    house_mode_regularize_openings: bool = False
 
 
 def automatic_config(

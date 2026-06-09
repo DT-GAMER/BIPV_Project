@@ -26,6 +26,7 @@ from .geometry import (
     building_bbox_from_boxes,
     rectify_facade,
 )
+from .house_mode import apply_house_mode_postprocessing
 from .inpainting import (
     build_obstacle_box_mask,
     build_robust_mask,
@@ -410,122 +411,6 @@ def _exclude_ground_floor_from_mask(
     return segmentation, updated_dims
 
 
-def _remove_top_roof_pixels(facade_mask: np.ndarray, aligned_facade: np.ndarray) -> np.ndarray:
-    """Remove roof-like pixels from the upper facade mask.
-
-    This is intentionally conservative and only acts in the top portion of the
-    mask. It targets detached/low-rise house cases where dark pitched roof
-    surfaces leak into the facade mask while leaving the wall/gable regions.
-    """
-
-    if facade_mask.sum() == 0:
-        return facade_mask.astype(bool)
-
-    height, _ = facade_mask.shape
-    ys, _ = np.where(facade_mask)
-    top = int(ys.min())
-    bottom = int(ys.max())
-    facade_height = max(bottom - top + 1, 1)
-    top_limit = min(height, top + int(round(facade_height * 0.38)))
-
-    top_zone = np.zeros_like(facade_mask, dtype=bool)
-    top_zone[top:top_limit, :] = True
-
-    hsv = cv2.cvtColor(aligned_facade, cv2.COLOR_RGB2HSV)
-    gray = cv2.cvtColor(aligned_facade, cv2.COLOR_RGB2GRAY)
-    hue = hsv[:, :, 0]
-    saturation = hsv[:, :, 1]
-    value = hsv[:, :, 2]
-
-    # Pitched roofs are commonly dark grey/blue panels or dark slate/tile in the
-    # top facade band. White/light gable wall is intentionally not removed.
-    dark_roof = (
-        ((value < 155) & (saturation < 95))
-        | ((hue >= 88) & (hue <= 135) & (saturation > 35) & (value < 185))
-        | (gray < 115)
-    )
-    candidate = dark_roof & facade_mask.astype(bool) & top_zone
-
-    cleaned = np.zeros_like(candidate, dtype=bool)
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        candidate.astype(np.uint8),
-        connectivity=8,
-    )
-    facade_area = int(facade_mask.sum())
-    for label_id in range(1, num_labels):
-        x, y, component_w, component_h, area = stats[label_id]
-        if area < max(20, facade_area * 0.002):
-            continue
-        if y > top + facade_height * 0.30:
-            continue
-        if component_h > facade_height * 0.32:
-            continue
-        if component_w < 8:
-            continue
-        cleaned |= labels == label_id
-
-    # Avoid destructive removals on dark-stone buildings.
-    if cleaned.sum() > facade_area * 0.18:
-        return facade_mask.astype(bool)
-
-    return facade_mask.astype(bool) & ~cleaned
-
-
-def _regularize_small_opening_components(
-    opening_mask: np.ndarray,
-    facade_mask: np.ndarray,
-) -> np.ndarray:
-    """Make small low-rise window/opening components cleaner rectangles."""
-
-    if opening_mask.sum() == 0 or facade_mask.sum() == 0:
-        return opening_mask.astype(bool)
-
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        opening_mask.astype(np.uint8),
-        connectivity=8,
-    )
-    component_count = num_labels - 1
-    if component_count == 0 or component_count > 22:
-        return opening_mask.astype(bool)
-
-    facade_area = int(facade_mask.sum())
-    regularized = np.zeros_like(opening_mask, dtype=bool)
-    changed = False
-
-    for label_id in range(1, num_labels):
-        x, y, component_w, component_h, area = stats[label_id]
-        if area <= 0 or component_w <= 2 or component_h <= 2:
-            continue
-
-        bbox_area = component_w * component_h
-        area_fraction = bbox_area / max(facade_area, 1)
-        aspect = component_h / max(component_w, 1)
-        fill = area / max(bbox_area, 1)
-
-        if 0.0003 <= area_fraction <= 0.06 and 0.25 <= aspect <= 5.5 and fill >= 0.20:
-            pad_x = max(0, int(round(component_w * 0.04)))
-            pad_y = max(0, int(round(component_h * 0.04)))
-            candidate = np.zeros_like(opening_mask, dtype=bool)
-            candidate[y + pad_y : y + component_h - pad_y, x + pad_x : x + component_w - pad_x] = True
-            if (candidate & facade_mask).sum() / max(candidate.sum(), 1) >= 0.65:
-                regularized |= candidate & facade_mask
-                changed = True
-                continue
-
-        regularized |= labels == label_id
-
-    if not changed:
-        return opening_mask.astype(bool)
-
-    # Keep the correction bounded; if rectangles massively change the area, use
-    # the original mask because it is safer for area estimation.
-    ratio = regularized.sum() / max(opening_mask.sum(), 1)
-    if not 0.65 <= ratio <= 1.85:
-        return opening_mask.astype(bool)
-
-    return regularized & facade_mask
-
-
 def _postprocess_facade_mask(segmentation: dict, aligned_facade: np.ndarray) -> dict:
     """Remove sky pixels and smooth facade mask edges after segmentation."""
 
@@ -549,20 +434,12 @@ def _postprocess_facade_mask(segmentation: dict, aligned_facade: np.ndarray) -> 
     # Re-apply clean boundary after all pipeline AND-clips (rectified_content_mask,
     # architectural exclusions) which re-introduce jagged SAM edges.
     facade_clean = _clean_facade_boundary(facade_after_sky)
-    facade_clean = _remove_top_roof_pixels(facade_clean, aligned_facade)
 
     # Re-clip all derived masks to the final clean boundary.
     segmentation["facade_mask"] = facade_clean
     for key in ("window_mask", "raw_window_mask", "door_mask", "balcony_mask", "roof_mask"):
         if key in segmentation:
             segmentation[key] = segmentation[key] & facade_clean
-
-    for key in ("window_mask", "raw_window_mask"):
-        if key in segmentation:
-            segmentation[key] = _regularize_small_opening_components(
-                segmentation[key],
-                facade_clean,
-            )
 
     return segmentation
 
@@ -786,7 +663,15 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         config,
     )
     segmentation = _postprocess_facade_mask(segmentation, aligned_facade)
+    house_mode_stage = {"enabled": False, "reason": "building_type is not house"}
+    if config.building_type.strip().lower() == "house":
+        segmentation, house_mode_stage = apply_house_mode_postprocessing(
+            segmentation,
+            aligned_facade,
+            regularize_openings=config.house_mode_regularize_openings,
+        )
     stages["segmentation"] = segmentation["quality"]
+    stages["house_mode"] = house_mode_stage
 
     # Scaling and floor inference must use the final semantic opening mask,
     # including SAM/CV detections and conservative hidden-window inference,

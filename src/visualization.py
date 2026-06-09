@@ -444,7 +444,7 @@ def save_workflow_grid_image(
 
 
 def _methodology_stage_images(result):
-    """Return the eight stage images used by the circular methodology figure."""
+    """Return the five stage images used by the circular methodology figure."""
 
     image_rgb = result["image_rgb"]
     obstacle_mask = result.get(
@@ -453,14 +453,6 @@ def _methodology_stage_images(result):
     )
     clean_image = result.get("clean_image", image_rgb)
     aligned_facade = result.get("aligned_facade", clean_image)
-    segmentation = result.get("segmentation", {})
-    usable_results = result.get("usable_results", {})
-
-    facade_mask = segmentation.get(
-        "facade_mask",
-        np.zeros(aligned_facade.shape[:2], dtype=bool),
-    )
-    usable_mask = usable_results.get("usable_mask", facade_mask)
 
     obstacle_detection = make_mask_overlay(
         image_rgb,
@@ -468,33 +460,15 @@ def _methodology_stage_images(result):
         color=(255, 0, 0),
         alpha=0.52,
     )
-    obstacle_masking = make_mask_overlay(
-        image_rgb,
-        obstacle_mask.astype(bool),
-        color=(255, 255, 255),
-        alpha=0.82,
-    )
-    usable_overlay = make_mask_overlay(
-        aligned_facade,
-        usable_mask.astype(bool),
-        color=(0, 190, 0),
-        alpha=0.45,
-    )
 
-    try:
-        facade_elements = make_segmentation_alignment_image(result)
-    except KeyError:
-        facade_elements = usable_overlay
+    segmentation_image = make_binary_mask_image(result["usable_results"]["usable_mask"])
 
     return {
         1: image_rgb,
         2: obstacle_detection,
-        3: obstacle_detection,
-        4: obstacle_masking,
-        5: clean_image,
-        6: aligned_facade,
-        7: facade_elements,
-        8: usable_overlay,
+        3: clean_image,
+        4: aligned_facade,
+        5: segmentation_image,
     }
 
 
@@ -581,7 +555,7 @@ def build_methodology_overview_figure(
     figsize=(11, 11),
     title="IMAGE-BASED PIPELINE\nFOR BIPV FACADE AREA\nESTIMATION",
 ):
-    """Build a circular methodology overview figure for one analysed image."""
+    """Build a five-stage circular methodology overview for one analysed image."""
 
     from matplotlib.patches import Circle, FancyArrowPatch
 
@@ -592,73 +566,52 @@ def build_methodology_overview_figure(
     axis.axis("off")
 
     positions = {
-        1: (0.50, 0.88),
-        2: (0.82, 0.70),
-        3: (0.82, 0.49),
-        4: (0.78, 0.28),
-        5: (0.50, 0.13),
-        6: (0.22, 0.28),
-        7: (0.18, 0.49),
-        8: (0.18, 0.70),
+        1: (0.50, 0.86),
+        2: (0.81, 0.62),
+        3: (0.70, 0.23),
+        4: (0.30, 0.23),
+        5: (0.19, 0.62),
     }
     colors = {
         1: "#1f4e8c",
         2: "#2a9bb0",
         3: "#6aa84f",
-        4: "#7bb342",
-        5: "#f0a51a",
-        6: "#f28c28",
-        7: "#d9534f",
-        8: "#8e44ad",
+        4: "#f28c28",
+        5: "#8e44ad",
     }
     stage_text = {
         1: (
-            "IMAGE ACQUISITION\n& PRE-PROCESSING",
-            "Street-level facade\nimage captured and\npre-processed.",
+            "FACADE IMAGE",
+            "Street-level facade\nimage used as the\npipeline input.",
         ),
         2: (
-            "OBJECT DETECTION\n(GROUNDING DINO)",
-            "Zero-shot detection\nof facade elements\nand obstacles.",
+            "OBSTACLE DETECTION",
+            "Grounding DINO detects\nforeground obstructions\non the facade image.",
         ),
         3: (
-            "IMAGE SEGMENTATION\n(SAM)",
-            "Pixel-level masks are\ngenerated for detected\nobjects.",
+            "OBSTACLE REMOVAL",
+            "SAM and inpainting\nremove detected\nobstacles.",
         ),
         4: (
-            "OBSTACLE MASKING",
-            "Urban obstacles are\nisolated before\nreconstruction.",
-        ),
-        5: (
-            "OBSTACLE REMOVAL &\nIMAGE INPAINTING",
-            "Masked regions are\nreconstructed using\ninpainting.",
-        ),
-        6: (
-            "FACADE RECTIFICATION",
+            "FACADE ALIGNMENT",
             "Perspective distortion\nis corrected for a\nfront-facing facade.",
         ),
-        7: (
-            "FACADE ELEMENT\nSEGMENTATION",
-            "Walls, windows, doors\nand balconies are\nsegmented.",
-        ),
-        8: (
-            "USABLE BIPV AREA\nESTIMATION",
-            "Openings and margins\nare excluded to compute\ninstallable area.",
+        5: (
+            "SEGMENTATION RESULT",
+            "Facade wall and excluded\nopenings are converted\ninto the final mask.",
         ),
     }
 
     ring_points = [
-        (0.50, 0.79),
-        (0.70, 0.75),
-        (0.86, 0.59),
-        (0.86, 0.38),
-        (0.68, 0.19),
-        (0.32, 0.19),
-        (0.14, 0.38),
-        (0.14, 0.59),
-        (0.30, 0.75),
-        (0.50, 0.79),
+        (0.50, 0.76),
+        (0.70, 0.68),
+        (0.76, 0.34),
+        (0.50, 0.20),
+        (0.24, 0.34),
+        (0.30, 0.68),
+        (0.50, 0.76),
     ]
-    arrow_colors = ["#2f6fa8", "#2f8f8d", "#59a14f", "#8cbf26", "#f0a51a", "#f28c28", "#c04b91", "#7e57c2", "#5b6fb0"]
+    arrow_colors = ["#2f6fa8", "#2f8f8d", "#59a14f", "#f28c28", "#8e44ad", "#5b6fb0"]
     for start, end, arrow_color in zip(ring_points[:-1], ring_points[1:], arrow_colors):
         axis.add_patch(
             FancyArrowPatch(

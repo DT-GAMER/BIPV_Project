@@ -555,9 +555,9 @@ def build_methodology_overview_figure(
     figsize=(11, 11),
     title="IMAGE-BASED PIPELINE\nFOR BIPV FACADE AREA\nESTIMATION",
 ):
-    """Build a five-stage circular methodology overview for one analysed image."""
+    """Build a five-stage straight methodology overview for one analysed image."""
 
-    from matplotlib.patches import Circle, FancyArrowPatch
+    from matplotlib.patches import FancyArrowPatch
 
     stage_images = _methodology_stage_images(result)
     fig, axis = plt.subplots(figsize=figsize, facecolor="white")
@@ -566,11 +566,11 @@ def build_methodology_overview_figure(
     axis.axis("off")
 
     positions = {
-        1: (0.50, 0.86),
-        2: (0.81, 0.62),
-        3: (0.70, 0.23),
-        4: (0.30, 0.23),
-        5: (0.19, 0.62),
+        1: (0.50, 0.78),
+        2: (0.50, 0.61),
+        3: (0.50, 0.44),
+        4: (0.50, 0.27),
+        5: (0.50, 0.10),
     }
     colors = {
         1: "#1f4e8c",
@@ -602,47 +602,13 @@ def build_methodology_overview_figure(
         ),
     }
 
-    ring_points = [
-        (0.50, 0.76),
-        (0.70, 0.68),
-        (0.76, 0.34),
-        (0.50, 0.20),
-        (0.24, 0.34),
-        (0.30, 0.68),
-        (0.50, 0.76),
-    ]
-    arrow_colors = ["#2f6fa8", "#2f8f8d", "#59a14f", "#f28c28", "#8e44ad", "#5b6fb0"]
-    for start, end, arrow_color in zip(ring_points[:-1], ring_points[1:], arrow_colors):
-        axis.add_patch(
-            FancyArrowPatch(
-                start,
-                end,
-                arrowstyle="-|>",
-                mutation_scale=18,
-                linewidth=4.0,
-                color=arrow_color,
-                alpha=0.82,
-                connectionstyle="arc3,rad=0.08",
-                zorder=1,
-            )
-        )
-
-    center_circle = Circle(
-        (0.5, 0.505),
-        0.17,
-        facecolor="white",
-        edgecolor="#e2e2e2",
-        linewidth=1.2,
-        zorder=2,
-    )
-    axis.add_patch(center_circle)
     axis.text(
         0.5,
-        0.56,
+        0.965,
         title,
         ha="center",
-        va="center",
-        fontsize=13,
+        va="top",
+        fontsize=15,
         weight="bold",
         color="#153a63",
         linespacing=1.15,
@@ -650,38 +616,35 @@ def build_methodology_overview_figure(
     )
     axis.text(
         0.5,
-        0.485,
-        "From Street-Level Image to\nPVsyst-Ready Data",
+        0.885,
+        "From Street-Level Image to PVsyst-Ready Data",
         ha="center",
-        va="center",
-        fontsize=10,
+        va="top",
+        fontsize=11,
         color="#35495e",
         zorder=4,
     )
-    axis.plot([0.39, 0.61], [0.435, 0.435], color="#cccccc", linewidth=1.0, zorder=4)
-    axis.text(
-        0.5,
-        0.405,
-        "FINAL OUTPUTS",
-        ha="center",
-        va="center",
-        fontsize=10,
-        weight="bold",
-        color="#153a63",
-        zorder=4,
-    )
-    axis.text(
-        0.5,
-        0.36,
-        "Usable BIPV Area   Facade Segmentation   Excel   JSON",
-        ha="center",
-        va="center",
-        fontsize=8.2,
-        color="#2f6f3e",
-        zorder=4,
-    )
 
-    card_size = (0.29, 0.155)
+    card_size = (0.62, 0.125)
+    arrow_colors = ["#2f6fa8", "#2f8f8d", "#59a14f", "#f28c28"]
+    card_half_h = card_size[1] / 2
+    for number, arrow_color in zip(range(1, 5), arrow_colors):
+        start = (positions[number][0], positions[number][1] - card_half_h - 0.006)
+        end = (positions[number + 1][0], positions[number + 1][1] + card_half_h + 0.006)
+        axis.add_patch(
+            FancyArrowPatch(
+                start,
+                end,
+                arrowstyle="-|>",
+                mutation_scale=18,
+                linewidth=2.8,
+                color=arrow_color,
+                alpha=0.82,
+                connectionstyle="arc3,rad=0.0",
+                zorder=1,
+            )
+        )
+
     for number, center in positions.items():
         stage_title, body = stage_text[number]
         _add_methodology_card(
@@ -694,6 +657,17 @@ def build_methodology_overview_figure(
             stage_images[number],
             colors[number],
         )
+
+    axis.text(
+        0.5,
+        0.012,
+        "Final outputs: Usable BIPV Area   Facade Segmentation   Excel   JSON",
+        ha="center",
+        va="bottom",
+        fontsize=9.2,
+        color="#2f6f3e",
+        zorder=4,
+    )
 
     plt.tight_layout(pad=0.2)
     return fig

@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 
-def _top_facade_zone(facade_mask: np.ndarray, fraction: float = 0.36) -> np.ndarray:
+def _top_facade_zone(facade_mask: np.ndarray, fraction: float = 0.28) -> np.ndarray:
     zone = np.zeros_like(facade_mask, dtype=bool)
     if facade_mask.sum() == 0:
         return zone
@@ -38,9 +38,8 @@ def _detect_pitched_roof_pixels(aligned_facade: np.ndarray, facade_mask: np.ndar
 
     top_zone = _top_facade_zone(facade_mask)
     roof_like = (
-        ((value < 150) & (saturation < 95))
-        | ((hue >= 88) & (hue <= 135) & (saturation > 30) & (value < 190))
-        | (gray < 105)
+        ((value < 135) & (saturation < 80))
+        | ((hue >= 88) & (hue <= 135) & (saturation > 45) & (value < 170))
     )
     candidate = roof_like & top_zone & facade_mask
 
@@ -58,24 +57,21 @@ def _detect_pitched_roof_pixels(aligned_facade: np.ndarray, facade_mask: np.ndar
         x, y, component_w, component_h, area = stats[label_id]
         if area < max(25, facade_area * 0.002):
             continue
-        if area > facade_area * 0.16:
+        if area > facade_area * 0.08:
             continue
         if component_w < 10:
             continue
-        if component_h > facade_height * 0.28:
+        if component_h > facade_height * 0.18:
             continue
-        if y > facade_top + facade_height * 0.30:
+        if y > facade_top + facade_height * 0.22:
             continue
         cleaned |= labels == label_id
 
     # If the detector wants to remove too much, it is probably seeing dark stone
     # or shadow rather than roof. Keep the original segmentation in that case.
-    if cleaned.sum() > facade_area * 0.18:
+    if cleaned.sum() > facade_area * 0.10:
         return np.zeros_like(facade_mask, dtype=bool)
-
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
-    cleaned_uint = cv2.morphologyEx(cleaned.astype(np.uint8), cv2.MORPH_CLOSE, close_kernel)
-    return cleaned_uint.astype(bool) & facade_mask
+    return cleaned & facade_mask
 
 
 def _regularize_small_openings(opening_mask: np.ndarray, facade_mask: np.ndarray) -> np.ndarray:

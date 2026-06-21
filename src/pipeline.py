@@ -466,6 +466,19 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     }
 
     print("Stage 2/8 - Facade object detection")
+    house_extra_obstacles = []
+    if config.building_type.strip().lower() == "house":
+        house_extra_obstacles = [
+            "bush",
+            "shrub",
+            "hedge",
+            "plant",
+            "garden plant",
+            "flower pot",
+            "driveway post",
+            "garden fence",
+            "gate",
+        ]
     source_detection = detect_obstacles_and_architecture(
         image_rgb,
         models["dino_model"],
@@ -473,6 +486,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         facade_roi_bottom=config.facade_roi_bottom,
         box_threshold=config.dino_box_threshold,
         text_threshold=config.dino_text_threshold,
+        extra_classes=house_extra_obstacles,
     )
     height, width = image_rgb.shape[:2]
     bx1, by1, bx2, by2, keep_boxes, facade_selection_quality = building_bbox_from_boxes(
@@ -704,6 +718,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         require_google_earth_dimensions=config.require_google_earth_dimensions,
         known_floors=config.known_floors,
         floor_height_m=config.floor_height_m,
+        building_type=config.building_type,
     )
     stages["scaling"] = {
         "source": dimensions.get("scale_source", validation.get("source")),
@@ -711,6 +726,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "confidence": dimensions.get("scale_confidence", validation.get("confidence")),
         "floor_count_source": dimensions.get("floor_count_source"),
         "floor_count_candidates": dimensions.get("floor_count_candidates"),
+        "house_mode_floor_override": dimensions.get("house_mode_floor_override"),
         "validation": validation,
     }
 

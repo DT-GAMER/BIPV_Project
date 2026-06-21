@@ -41,12 +41,19 @@ REMOVE_KEYWORDS = {
     "bicycle",
     "motorcycle",
     "tree",
+    "bush",
+    "shrub",
+    "hedge",
+    "plant",
+    "flower",
     "pole",
     "lamp",
     "street",
     "sign",
     "fence",
     "railing",
+    "gate",
+    "post",
 }
 
 _DINO_TRANSFORM = T.Compose(
@@ -78,16 +85,18 @@ def detect_obstacles_and_architecture(
     facade_roi_bottom: float = 0.90,
     box_threshold: float = 0.25,
     text_threshold: float = 0.20,
+    extra_classes: list[str] | None = None,
 ) -> DetectionResult:
     """Detect architectural elements and removable obstacles in the source image."""
 
     from groundingdino.util.inference import predict as dino_predict
 
     image_tensor = preprocess_for_dino(image_rgb, device)
+    classes = ALL_CLASSES + list(extra_classes or [])
     boxes_all, logits_all, phrases_all = dino_predict(
         model=dino_model,
         image=image_tensor,
-        caption=" . ".join(ALL_CLASSES),
+        caption=" . ".join(classes),
         box_threshold=box_threshold,
         text_threshold=text_threshold,
     )

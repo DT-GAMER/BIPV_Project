@@ -719,6 +719,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         known_floors=config.known_floors,
         floor_height_m=config.floor_height_m,
         building_type=config.building_type,
+        house_max_floors=config.house_max_floors,
     )
     stages["scaling"] = {
         "source": dimensions.get("scale_source", validation.get("source")),

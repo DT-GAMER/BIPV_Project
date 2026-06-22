@@ -101,6 +101,7 @@ class AnalysisConfig:
     exclude_ground_floor: bool = False
     building_type: str = "urban"  # Set to "house" for detached/low-rise pitched-roof homes.
     house_mode_regularize_openings: bool = False
+    house_max_floors: int | None = None
 
 
 def automatic_config(

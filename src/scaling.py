@@ -175,6 +175,7 @@ def estimate_real_world_scale(
     floor_height_m: float = 3.0,
     building_type: str = "urban",
     house_max_floors: int | None = None,
+    geospatial_reference: dict | None = None,
 ):
     """Estimate real-world facade dimensions.
 
@@ -202,6 +203,50 @@ def estimate_real_world_scale(
                 window_mask=window_mask,
                 house_max_floors=house_max_floors,
             )
+        if geospatial_reference is not None:
+            facade_height_px, facade_width_px = mask_extent(facade_mask)
+            geo_width_m = geospatial_reference.get("facade_width_m")
+            geo_height_m = geospatial_reference.get("height_m") or scale_estimate["height_m"]
+            if geo_width_m and geo_height_m:
+                pixels_per_meter_y = facade_height_px / geo_height_m if geo_height_m else 0
+                pixels_per_meter_x = facade_width_px / geo_width_m if geo_width_m else 0
+                geo_confidence = 0.88 if geospatial_reference.get("height_m") else 0.78
+                validation = validate_scale_estimate(scale_estimate, geo_width_m, geo_height_m)
+                validation.update(
+                    {
+                        "source": "geospatial",
+                        "calibration_source": geospatial_reference.get("source"),
+                        "reference_width_m": geo_width_m,
+                        "reference_height_m": geo_height_m,
+                        "image_estimate_source": scale_estimate["source"],
+                        "image_estimate_height_m": scale_estimate["height_m"],
+                        "image_estimate_width_m": scale_estimate["width_m"],
+                        "image_estimate_area_m2": scale_estimate["total_facade_area_m2"],
+                        "geospatial_reference": geospatial_reference,
+                    }
+                )
+                dimensions = {
+                    "num_floors": geospatial_reference.get("building_levels") or scale_estimate["num_floors"],
+                    "height_m": geo_height_m,
+                    "width_m": geo_width_m,
+                    "pixels_per_meter": pixels_per_meter_y,
+                    "pixels_per_meter_x": pixels_per_meter_x,
+                    "pixels_per_meter_y": pixels_per_meter_y,
+                    "total_facade_area_m2": geo_height_m * geo_width_m,
+                    "scale_source": "geospatial",
+                    "scale_confidence": geo_confidence,
+                    "scale_method": "geospatial-footprint-calibrated-image-scale",
+                    "floor_count_source": (
+                        geospatial_reference.get("height_source")
+                        or scale_estimate["floor_count_source"]
+                    ),
+                    "floor_count_candidates": scale_estimate["floor_count_candidates"],
+                    "floor_height_m": scale_estimate["floor_height_m"],
+                    "floor_height_source": scale_estimate["floor_height_source"],
+                    "house_mode_floor_override": scale_estimate.get("house_mode_floor_override"),
+                    "geospatial_reference": geospatial_reference,
+                }
+                return dimensions, validation
         validation = validate_scale_estimate(scale_estimate, ge_width_m, ge_height_m)
         dimensions = {
             "num_floors": scale_estimate["num_floors"],

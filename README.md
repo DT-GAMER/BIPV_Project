@@ -40,6 +40,16 @@ Each stage solves one problem:
 7. `src/segmentation.py` and `src/alignment.py` segment facade elements and structure floors/window columns.
 8. `src/bipv_segmentation.py`, `src/scale_estimation.py`, and `src/area.py` estimate usable BIPV facade area.
 
+Optional geospatial scaling is also supported:
+
+```text
+address or latitude/longitude
+  -> Google Geocoding API, if an address is supplied
+  -> OpenStreetMap/Overpass building footprint lookup
+  -> facade width and height calibration
+  -> pixel-to-metre conversion
+```
+
 Shadow and illumination analysis is currently disabled so development can focus
 on the image-based facade parsing and usable-area stages.
 
@@ -186,6 +196,45 @@ config = AnalysisConfig(
     require_google_earth_dimensions=True,
 )
 ```
+
+Optional automatic geospatial scaling, if an address or coordinates are
+available:
+
+```python
+from google.colab import userdata
+from src.config import AnalysisConfig
+
+GOOGLE_MAPS_API_KEY = userdata.get("GOOGLE_MAPS_API_KEY")
+
+config = AnalysisConfig(
+    image_path=IMAGE_PATH,
+    output_path=OUTPUT_PATH,
+    use_geospatial_scaling=True,
+    address="Princes Street, Edinburgh, Scotland",
+    google_maps_api_key=GOOGLE_MAPS_API_KEY,
+)
+
+result = run_bipv_analysis(config)
+print(result["dimensions"])
+print(result["stages"]["geospatial_scaling"])
+```
+
+If you already know the coordinates, you can avoid paid geocoding calls:
+
+```python
+config = AnalysisConfig(
+    image_path=IMAGE_PATH,
+    output_path=OUTPUT_PATH,
+    use_geospatial_scaling=True,
+    latitude=55.9533,
+    longitude=-3.1883,
+)
+```
+
+This mode uses the geospatial dimensions when a building footprint is found. If
+the lookup fails, the pipeline records the reason in
+`result["stages"]["geospatial_scaling"]` and falls back to the image-only scale
+estimate.
 
 ## Local Development
 

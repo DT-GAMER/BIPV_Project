@@ -34,6 +34,9 @@ def prepare_pvsyst_export(
             "scale_source": dimensions.get("scale_source", "measured-or-estimated"),
             "scale_method": dimensions.get("scale_method", "unknown"),
             "scale_confidence": dimensions.get("scale_confidence"),
+            "pixels_per_meter_x": dimensions.get("pixels_per_meter_x"),
+            "pixels_per_meter_y": dimensions.get("pixels_per_meter_y"),
+            "geospatial_reference": dimensions.get("geospatial_reference"),
         },
         "usable_area": {
             "facade_area_m2": usable_results["facade_area_m2"],

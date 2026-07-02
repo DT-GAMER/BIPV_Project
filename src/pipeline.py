@@ -26,6 +26,8 @@ from .geometry import (
     building_bbox_from_boxes,
     rectify_facade,
 )
+from .geocoding import resolve_coordinates
+from .geospatial import fetch_osm_building_reference
 from .house_mode import apply_house_mode_postprocessing
 from .inpainting import (
     build_obstacle_box_mask,
@@ -707,7 +709,44 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "reason": "Current methodology focus excludes shadow and illumination analysis.",
     }
 
-    print("Stage 8/8 - Usable BIPV area estimation")
+    geospatial_reference = None
+    stages["geospatial_scaling"] = {"enabled": False, "status": "not-used"}
+    if config.use_geospatial_scaling:
+        print("Stage 8/8 - Geospatial lookup and usable BIPV area estimation")
+        try:
+            coordinates = resolve_coordinates(
+                address=config.address,
+                latitude=config.latitude,
+                longitude=config.longitude,
+                google_maps_api_key=config.google_maps_api_key,
+            )
+            if coordinates is None:
+                raise ValueError(
+                    "Geospatial scaling needs either address or latitude/longitude."
+                )
+            geospatial_reference = fetch_osm_building_reference(
+                coordinates["lat"],
+                coordinates["lon"],
+                radius_m=config.geospatial_lookup_radius_m,
+                facade_bearing_deg=config.facade_bearing_deg,
+                default_floor_height_m=config.floor_height_m,
+            )
+            stages["geospatial_scaling"] = {
+                "enabled": True,
+                "status": "used",
+                "coordinates": coordinates,
+                "reference": geospatial_reference,
+            }
+        except Exception as exc:
+            stages["geospatial_scaling"] = {
+                "enabled": True,
+                "status": "fallback-to-image-scale",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            geospatial_reference = None
+
+    if not config.use_geospatial_scaling:
+        print("Stage 8/8 - Usable BIPV area estimation")
     dimensions, validation = estimate_real_world_scale(
         aligned_facade,
         window_boxes_np,
@@ -720,6 +759,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         floor_height_m=config.floor_height_m,
         building_type=config.building_type,
         house_max_floors=config.house_max_floors,
+        geospatial_reference=geospatial_reference,
     )
     stages["scaling"] = {
         "source": dimensions.get("scale_source", validation.get("source")),

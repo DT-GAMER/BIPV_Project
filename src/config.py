@@ -102,6 +102,13 @@ class AnalysisConfig:
     building_type: str = "urban"  # Set to "house" for detached/low-rise pitched-roof homes.
     house_mode_regularize_openings: bool = False
     house_max_floors: int | None = None
+    use_geospatial_scaling: bool = False
+    address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    google_maps_api_key: str | None = None
+    geospatial_lookup_radius_m: float = 60.0
+    facade_bearing_deg: float | None = None
 
 
 def automatic_config(

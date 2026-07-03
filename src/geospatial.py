@@ -5,11 +5,16 @@ from __future__ import annotations
 import json
 import math
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URLS = (
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.openstreetmap.ru/api/interpreter",
+)
 EARTH_RADIUS_M = 6_371_008.8
 
 
@@ -136,6 +141,30 @@ def _building_candidates(payload: dict, target_lat: float, target_lon: float) ->
     return candidates
 
 
+def _overpass_payload(query: str) -> tuple[dict, str]:
+    """Request Overpass JSON, trying public mirrors if one endpoint rejects us."""
+
+    data = urllib.parse.urlencode({"data": query}).encode("utf-8")
+    headers = {
+        "User-Agent": "BIPV_Project/0.1 academic-research",
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    }
+    errors = []
+    for url in OVERPASS_URLS:
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=35) as response:
+                return json.loads(response.read().decode("utf-8")), url
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:240]
+            errors.append(f"{url}: HTTP {exc.code} {body}".strip())
+        except urllib.error.URLError as exc:
+            errors.append(f"{url}: {exc.reason}")
+
+    raise ValueError("All Overpass endpoints failed. " + " | ".join(errors))
+
+
 def fetch_osm_building_reference(
     lat: float,
     lon: float,
@@ -154,10 +183,7 @@ def fetch_osm_building_reference(
     );
     out tags geom center;
     """
-    data = urllib.parse.urlencode({"data": query}).encode("utf-8")
-    request = urllib.request.Request(OVERPASS_URL, data=data, method="POST")
-    with urllib.request.urlopen(request, timeout=35) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload, endpoint_url = _overpass_payload(query)
 
     candidates = _building_candidates(payload, lat, lon)
     if not candidates:
@@ -181,6 +207,7 @@ def fetch_osm_building_reference(
 
     return {
         "source": "osm-overpass",
+        "overpass_endpoint": endpoint_url,
         "osm_id": building["osm_id"],
         "osm_type": building["osm_type"],
         "distance_to_query_m": building["distance_to_query_m"],

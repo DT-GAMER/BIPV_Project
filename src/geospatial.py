@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -161,6 +162,8 @@ def _overpass_payload(query: str) -> tuple[dict, str]:
             errors.append(f"{url}: HTTP {exc.code} {body}".strip())
         except urllib.error.URLError as exc:
             errors.append(f"{url}: {exc.reason}")
+        except (TimeoutError, socket.timeout) as exc:
+            errors.append(f"{url}: timeout {exc}")
 
     raise ValueError("All Overpass endpoints failed. " + " | ".join(errors))
 

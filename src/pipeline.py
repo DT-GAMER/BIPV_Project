@@ -27,7 +27,7 @@ from .geometry import (
     rectify_facade,
 )
 from .geocoding import resolve_coordinates
-from .geospatial import fetch_osm_building_reference
+from .geospatial import fetch_geospatial_building_reference
 from .house_mode import apply_house_mode_postprocessing
 from .inpainting import (
     build_obstacle_box_mask,
@@ -725,7 +725,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
                 raise ValueError(
                     "Geospatial scaling needs either address or latitude/longitude."
                 )
-            geospatial_reference = fetch_osm_building_reference(
+            geospatial_reference = fetch_geospatial_building_reference(
                 coordinates["lat"],
                 coordinates["lon"],
                 radius_m=config.geospatial_lookup_radius_m,

@@ -6,9 +6,13 @@ import json
 import math
 import re
 import socket
+import subprocess
+import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 OVERPASS_URLS = (
@@ -142,6 +146,184 @@ def _building_candidates(payload: dict, target_lat: float, target_lon: float) ->
     return candidates
 
 
+def _bbox_around(lat: float, lon: float, radius_m: float) -> tuple[float, float, float, float]:
+    lat_delta = radius_m / 111_320
+    lon_delta = radius_m / (111_320 * max(math.cos(math.radians(lat)), 0.15))
+    return lon - lon_delta, lat - lat_delta, lon + lon_delta, lat + lat_delta
+
+
+def _geojson_ring_points(ring: list) -> list[tuple[float, float]]:
+    points = []
+    for coord in ring or []:
+        if len(coord) >= 2:
+            lon, lat = coord[:2]
+            points.append((float(lat), float(lon)))
+    return points
+
+
+def _geojson_polygon_points(geometry: dict) -> list[tuple[float, float]]:
+    geom_type = geometry.get("type")
+    coords = geometry.get("coordinates") or []
+    if geom_type == "Polygon" and coords:
+        return _geojson_ring_points(coords[0])
+    if geom_type == "MultiPolygon" and coords:
+        largest = max(coords, key=lambda polygon: len(polygon[0]) if polygon else 0)
+        return _geojson_ring_points(largest[0]) if largest else []
+    return []
+
+
+def _overture_features_from_file(path: Path) -> list[dict]:
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    if text.startswith("{"):
+        payload = json.loads(text)
+        if payload.get("type") == "FeatureCollection":
+            return payload.get("features", [])
+        if payload.get("type") == "Feature":
+            return [payload]
+
+    features = []
+    for line in text.splitlines():
+        line = line.strip().rstrip(",")
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("type") == "Feature":
+            features.append(payload)
+    return features
+
+
+def _run_overture_download(lat: float, lon: float, radius_m: float, path: Path) -> None:
+    west, south, east, north = _bbox_around(lat, lon, radius_m)
+    bbox = f"{west},{south},{east},{north}"
+    commands = (
+        [
+            sys.executable,
+            "-m",
+            "overturemaps",
+            "download",
+            "--bbox",
+            bbox,
+            "-f",
+            "geojson",
+            "--type",
+            "building",
+            "-o",
+            str(path),
+        ],
+        [
+            "overturemaps",
+            "download",
+            "--bbox",
+            bbox,
+            "-f",
+            "geojson",
+            "--type",
+            "building",
+            "-o",
+            str(path),
+        ],
+    )
+    errors = []
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{command[0]}: {exc}")
+            continue
+        if completed.returncode == 0 and path.exists():
+            return
+        errors.append((completed.stderr or completed.stdout or "").strip())
+    raise ValueError(
+        "Overture Maps lookup failed. Install `overturemaps` and retry. "
+        + " | ".join(error for error in errors if error)
+    )
+
+
+def fetch_overture_building_reference(
+    lat: float,
+    lon: float,
+    *,
+    radius_m: float = 60.0,
+    facade_bearing_deg: float | None = None,
+    default_floor_height_m: float = 3.3,
+) -> dict:
+    """Fetch and measure nearest Overture Maps building footprint."""
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir) / "overture_buildings.geojson"
+        _run_overture_download(lat, lon, radius_m, output_path)
+        features = _overture_features_from_file(output_path)
+
+    candidates = []
+    for feature in features:
+        geometry = feature.get("geometry") or {}
+        points = _geojson_polygon_points(geometry)
+        if len(points) < 3:
+            continue
+        centroid_lat, centroid_lon = _centroid(points)
+        candidates.append(
+            {
+                "feature": feature,
+                "points": points,
+                "centroid": [centroid_lat, centroid_lon],
+                "distance_to_query_m": _haversine_m(lat, lon, centroid_lat, centroid_lon),
+            }
+        )
+    candidates.sort(key=lambda item: item["distance_to_query_m"])
+    if not candidates:
+        raise ValueError(f"No Overture building footprint found within {radius_m:.0f} m.")
+
+    building = candidates[0]
+    properties = building["feature"].get("properties") or {}
+    edges = _edge_measurements(building["points"])
+    facade_edge, width_method = _select_facade_edge(edges, facade_bearing_deg=facade_bearing_deg)
+    if facade_edge is None:
+        raise ValueError("Overture building footprint did not contain measurable edges.")
+
+    height_m = _parse_height_m(
+        properties.get("height")
+        or properties.get("building_height")
+        or properties.get("min_height")
+    )
+    levels = _parse_levels(
+        properties.get("num_floors")
+        or properties.get("building_levels")
+        or properties.get("levels")
+    )
+    height_source = None
+    if height_m is not None:
+        height_source = "overture-height"
+    elif levels is not None:
+        height_m = levels * default_floor_height_m
+        height_source = "overture-building-levels"
+
+    return {
+        "source": "overture-maps",
+        "overture_id": properties.get("id") or building["feature"].get("id"),
+        "distance_to_query_m": building["distance_to_query_m"],
+        "facade_width_m": float(facade_edge["length_m"]),
+        "facade_width_source": f"overture-{width_method}",
+        "facade_edge": facade_edge,
+        "height_m": height_m,
+        "height_source": height_source,
+        "building_levels": levels,
+        "tags": properties,
+        "footprint_edge_count": len(edges),
+        "footprint_centroid": building["centroid"],
+    }
+
+
 def _overpass_payload(query: str) -> tuple[dict, str]:
     """Request Overpass JSON, trying public mirrors if one endpoint rejects us."""
 
@@ -181,8 +363,11 @@ def fetch_osm_building_reference(
     query = f"""
     [out:json][timeout:25];
     (
+      node["building"](around:{float(radius_m)},{float(lat)},{float(lon)});
       way["building"](around:{float(radius_m)},{float(lat)},{float(lon)});
       relation["building"](around:{float(radius_m)},{float(lat)},{float(lon)});
+      way["building:part"](around:{float(radius_m)},{float(lat)},{float(lon)});
+      relation["building:part"](around:{float(radius_m)},{float(lat)},{float(lon)});
     );
     out tags geom center;
     """
@@ -224,3 +409,41 @@ def fetch_osm_building_reference(
         "footprint_edge_count": len(edges),
         "footprint_centroid": building["centroid"],
     }
+
+
+def fetch_geospatial_building_reference(
+    lat: float,
+    lon: float,
+    *,
+    radius_m: float = 60.0,
+    facade_bearing_deg: float | None = None,
+    default_floor_height_m: float = 3.3,
+) -> dict:
+    """Fetch building dimensions from Overture first, then OSM/Overpass."""
+
+    errors = []
+    try:
+        return fetch_overture_building_reference(
+            lat,
+            lon,
+            radius_m=radius_m,
+            facade_bearing_deg=facade_bearing_deg,
+            default_floor_height_m=default_floor_height_m,
+        )
+    except Exception as exc:
+        errors.append(f"overture-maps: {type(exc).__name__}: {exc}")
+
+    try:
+        reference = fetch_osm_building_reference(
+            lat,
+            lon,
+            radius_m=radius_m,
+            facade_bearing_deg=facade_bearing_deg,
+            default_floor_height_m=default_floor_height_m,
+        )
+        reference["fallback_errors"] = errors
+        return reference
+    except Exception as exc:
+        errors.append(f"osm-overpass: {type(exc).__name__}: {exc}")
+
+    raise ValueError("No geospatial building footprint found. " + " | ".join(errors))

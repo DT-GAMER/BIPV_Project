@@ -713,6 +713,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     stages["geospatial_scaling"] = {"enabled": False, "status": "not-used"}
     if config.use_geospatial_scaling:
         print("Stage 8/8 - Geospatial lookup and usable BIPV area estimation")
+        coordinates = None
         try:
             coordinates = resolve_coordinates(
                 address=config.address,
@@ -742,6 +743,7 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
                 "enabled": True,
                 "status": "fallback-to-image-scale",
                 "reason": f"{type(exc).__name__}: {exc}",
+                "coordinates": coordinates,
             }
             geospatial_reference = None
 

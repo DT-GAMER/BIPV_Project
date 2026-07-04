@@ -772,6 +772,14 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "house_mode_floor_override": dimensions.get("house_mode_floor_override"),
         "validation": validation,
     }
+    if (
+        stages.get("geospatial_scaling", {}).get("status") == "used"
+        and dimensions.get("geospatial_reference") is not None
+    ):
+        stages["geospatial_scaling"]["reference"] = dimensions["geospatial_reference"]
+        stages["geospatial_scaling"]["facade_width_source"] = dimensions.get(
+            "facade_width_source"
+        )
 
     if config.exclude_ground_floor:
         segmentation, dimensions = _exclude_ground_floor_from_mask(segmentation, dimensions)

@@ -163,6 +163,58 @@ def _apply_house_floor_prior(
     return updated
 
 
+def _refine_geospatial_width_from_image_estimate(
+    geospatial_reference: dict,
+    image_width_m: float,
+) -> tuple[dict, str]:
+    """Prefer a footprint edge that agrees with the visible image facade width.
+
+    Overture/OSM may return a full building block where the longest edge is not
+    the photographed frontage. When no camera/facade bearing is provided, the
+    image-only width estimate is useful as a weak prior for choosing among
+    measured footprint edges.
+    """
+
+    edges = geospatial_reference.get("footprint_edges") or []
+    current_width = float(geospatial_reference.get("facade_width_m") or 0)
+    if not edges or image_width_m <= 0 or current_width <= 0:
+        return geospatial_reference, geospatial_reference.get(
+            "facade_width_source", "geospatial-footprint-edge"
+        )
+
+    selected = min(
+        edges,
+        key=lambda edge: abs(float(edge.get("length_m", 0)) - image_width_m),
+    )
+    selected_width = float(selected.get("length_m", 0))
+    if selected_width <= 0:
+        return geospatial_reference, geospatial_reference.get(
+            "facade_width_source", "geospatial-footprint-edge"
+        )
+
+    current_error = abs(current_width - image_width_m) / max(image_width_m, 1e-6)
+    selected_error = abs(selected_width - image_width_m) / max(image_width_m, 1e-6)
+    if selected_error + 0.05 >= current_error:
+        return geospatial_reference, geospatial_reference.get(
+            "facade_width_source", "geospatial-footprint-edge"
+        )
+
+    refined = dict(geospatial_reference)
+    refined["facade_width_m"] = selected_width
+    refined["facade_edge"] = selected
+    refined["facade_width_source"] = (
+        f"{geospatial_reference.get('source', 'geospatial')}-image-width-matched-edge"
+    )
+    refined["width_refinement"] = {
+        "original_width_m": current_width,
+        "image_estimate_width_m": image_width_m,
+        "selected_width_m": selected_width,
+        "original_relative_error": current_error,
+        "selected_relative_error": selected_error,
+    }
+    return refined, refined["facade_width_source"]
+
+
 def estimate_real_world_scale(
     aligned_facade,
     window_boxes_np,
@@ -204,6 +256,12 @@ def estimate_real_world_scale(
                 house_max_floors=house_max_floors,
             )
         if geospatial_reference is not None:
+            geospatial_reference, geospatial_width_method = (
+                _refine_geospatial_width_from_image_estimate(
+                    geospatial_reference,
+                    float(scale_estimate.get("width_m", 0)),
+                )
+            )
             facade_height_px, facade_width_px = mask_extent(facade_mask)
             geo_width_m = geospatial_reference.get("facade_width_m")
             geo_height_m = geospatial_reference.get("height_m") or scale_estimate["height_m"]
@@ -236,6 +294,7 @@ def estimate_real_world_scale(
                     "scale_source": "geospatial",
                     "scale_confidence": geo_confidence,
                     "scale_method": "geospatial-footprint-calibrated-image-scale",
+                    "facade_width_source": geospatial_width_method,
                     "floor_count_source": (
                         geospatial_reference.get("height_source")
                         or scale_estimate["floor_count_source"]

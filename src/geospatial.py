@@ -319,6 +319,7 @@ def fetch_overture_building_reference(
         "height_source": height_source,
         "building_levels": levels,
         "tags": properties,
+        "footprint_edges": edges,
         "footprint_edge_count": len(edges),
         "footprint_centroid": building["centroid"],
     }
@@ -406,6 +407,7 @@ def fetch_osm_building_reference(
         "height_source": height_source,
         "building_levels": levels,
         "tags": tags,
+        "footprint_edges": edges,
         "footprint_edge_count": len(edges),
         "footprint_centroid": building["centroid"],
     }

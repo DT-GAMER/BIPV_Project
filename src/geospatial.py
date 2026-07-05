@@ -12,6 +12,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import escape
 from pathlib import Path
 
 
@@ -319,6 +320,7 @@ def fetch_overture_building_reference(
         "height_source": height_source,
         "building_levels": levels,
         "tags": properties,
+        "footprint_points": [[lat, lon] for lat, lon in building["points"]],
         "footprint_edges": edges,
         "footprint_edge_count": len(edges),
         "footprint_centroid": building["centroid"],
@@ -407,6 +409,7 @@ def fetch_osm_building_reference(
         "height_source": height_source,
         "building_levels": levels,
         "tags": tags,
+        "footprint_points": [[lat, lon] for lat, lon in building["points"]],
         "footprint_edges": edges,
         "footprint_edge_count": len(edges),
         "footprint_centroid": building["centroid"],
@@ -449,3 +452,226 @@ def fetch_geospatial_building_reference(
         errors.append(f"osm-overpass: {type(exc).__name__}: {exc}")
 
     raise ValueError("No geospatial building footprint found. " + " | ".join(errors))
+
+
+def geospatial_reference_geojson(
+    reference: dict,
+    *,
+    query_lat: float | None = None,
+    query_lon: float | None = None,
+) -> dict:
+    """Build GeoJSON that verifies the selected building and facade edge."""
+
+    features = []
+    points = reference.get("footprint_points") or []
+    if points:
+        ring = [[float(lon), float(lat)] for lat, lon in points]
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "name": "Selected building footprint",
+                    "source": reference.get("source"),
+                    "overture_id": reference.get("overture_id"),
+                    "osm_id": reference.get("osm_id"),
+                },
+                "geometry": {"type": "Polygon", "coordinates": [ring]},
+            }
+        )
+
+    for edge in reference.get("footprint_edges") or []:
+        start = edge.get("start")
+        end = edge.get("end")
+        if not start or not end:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "name": f"Footprint edge {edge.get('index')}",
+                    "length_m": edge.get("length_m"),
+                    "bearing_deg": edge.get("bearing_deg"),
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [float(start[1]), float(start[0])],
+                        [float(end[1]), float(end[0])],
+                    ],
+                },
+            }
+        )
+
+    facade_edge = reference.get("facade_edge") or {}
+    start = facade_edge.get("start")
+    end = facade_edge.get("end")
+    if start and end:
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "name": "Selected facade edge",
+                    "length_m": facade_edge.get("length_m"),
+                    "bearing_deg": facade_edge.get("bearing_deg"),
+                    "facade_width_source": reference.get("facade_width_source"),
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [float(start[1]), float(start[0])],
+                        [float(end[1]), float(end[0])],
+                    ],
+                },
+            }
+        )
+
+    centroid = reference.get("footprint_centroid")
+    if centroid:
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "name": "Selected footprint centroid",
+                    "distance_to_query_m": reference.get("distance_to_query_m"),
+                },
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(centroid[1]), float(centroid[0])],
+                },
+            }
+        )
+
+    if query_lat is not None and query_lon is not None:
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {"name": "Input address/coordinate point"},
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(query_lon), float(query_lat)],
+                },
+            }
+        )
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+def save_geospatial_reference_geojson(
+    reference: dict,
+    output_path: str | Path,
+    *,
+    query_lat: float | None = None,
+    query_lon: float | None = None,
+) -> str:
+    """Save a GeoJSON verification file for the selected building reference."""
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = geospatial_reference_geojson(
+        reference,
+        query_lat=query_lat,
+        query_lon=query_lon,
+    )
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(output_path)
+
+
+def save_geospatial_reference_map(
+    reference: dict,
+    output_path: str | Path,
+    *,
+    query_lat: float | None = None,
+    query_lon: float | None = None,
+) -> str:
+    """Save a lightweight Leaflet HTML map for visual verification."""
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    centroid = reference.get("footprint_centroid") or [query_lat, query_lon]
+    center_lat = float(centroid[0] if centroid and centroid[0] is not None else 0)
+    center_lon = float(centroid[1] if centroid and centroid[1] is not None else 0)
+    geojson = geospatial_reference_geojson(
+        reference,
+        query_lat=query_lat,
+        query_lon=query_lon,
+    )
+    title = escape(
+        f"{reference.get('source', 'geospatial')} "
+        f"{reference.get('overture_id') or reference.get('osm_id') or ''}"
+    )
+    html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>BIPV Geospatial Reference Verification</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html, body, #map {{ height: 100%; margin: 0; }}
+    .info {{
+      position: absolute;
+      z-index: 1000;
+      left: 12px;
+      top: 12px;
+      max-width: 420px;
+      padding: 10px 12px;
+      background: white;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      font: 14px/1.35 Arial, sans-serif;
+    }}
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div class="info">
+  <strong>BIPV Geospatial Verification</strong><br>
+  Source: {escape(str(reference.get('source')))}<br>
+  Building ID: {title}<br>
+  Selected facade width: {float(reference.get('facade_width_m', 0)):.2f} m<br>
+  Selected edge source: {escape(str(reference.get('facade_width_source')))}<br>
+  Distance from input point: {float(reference.get('distance_to_query_m', 0)):.2f} m
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([{center_lat}, {center_lon}], 19);
+L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+  maxZoom: 22,
+  attribution: '&copy; OpenStreetMap contributors'
+}}).addTo(map);
+
+const data = {json.dumps(geojson)};
+function style(feature) {{
+  const name = feature.properties && feature.properties.name || '';
+  if (name === 'Selected building footprint') {{
+    return {{color: '#1f77b4', weight: 2, fillColor: '#1f77b4', fillOpacity: 0.18}};
+  }}
+  if (name === 'Selected facade edge') {{
+    return {{color: '#e31a1c', weight: 6}};
+  }}
+  if (name.startsWith('Footprint edge')) {{
+    return {{color: '#888', weight: 1, dashArray: '4 4'}};
+  }}
+  return {{color: '#333', weight: 2}};
+}}
+function pointToLayer(feature, latlng) {{
+  const name = feature.properties && feature.properties.name || '';
+  const color = name === 'Input address/coordinate point' ? '#ff7f00' : '#33a02c';
+  return L.circleMarker(latlng, {{radius: 7, color, fillColor: color, fillOpacity: 0.9}});
+}}
+const layer = L.geoJSON(data, {{
+  style,
+  pointToLayer,
+  onEachFeature: (feature, layer) => {{
+    const props = feature.properties || {{}};
+    layer.bindPopup(Object.entries(props).map(([k,v]) => `<strong>${{k}}</strong>: ${{v}}`).join('<br>'));
+  }}
+}}).addTo(map);
+map.fitBounds(layer.getBounds(), {{padding: [30, 30]}});
+</script>
+</body>
+</html>
+"""
+    output_path.write_text(html, encoding="utf-8")
+    return str(output_path)

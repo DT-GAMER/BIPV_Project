@@ -215,6 +215,40 @@ def _refine_geospatial_width_from_image_estimate(
     return refined, refined["facade_width_source"]
 
 
+def _height_from_geospatial_width_and_facade_aspect(
+    facade_mask,
+    geo_width_m: float,
+) -> tuple[float, dict]:
+    """Estimate facade height from measured footprint width and image aspect.
+
+    Overture/OSM usually provides a reliable plan-view footprint but not a
+    facade height. Once the photographed facade is aligned, the visible facade
+    mask gives a pixel height-to-width ratio. Multiplying that ratio by the
+    measured facade width produces a height estimate that does not depend on
+    floor counting.
+    """
+
+    facade_height_px, facade_width_px = mask_extent(facade_mask)
+    if facade_width_px <= 0 or geo_width_m <= 0:
+        return 0.0, {
+            "status": "failed",
+            "reason": "missing-facade-width",
+            "facade_height_px": int(facade_height_px),
+            "facade_width_px": int(facade_width_px),
+            "geo_width_m": float(geo_width_m or 0),
+        }
+
+    aspect_h_over_w = facade_height_px / max(facade_width_px, 1)
+    return geo_width_m * aspect_h_over_w, {
+        "status": "estimated",
+        "method": "geospatial-width-facade-pixel-aspect",
+        "facade_height_px": int(facade_height_px),
+        "facade_width_px": int(facade_width_px),
+        "facade_aspect_h_over_w": float(aspect_h_over_w),
+        "reference_width_m": float(geo_width_m),
+    }
+
+
 def estimate_real_world_scale(
     aligned_facade,
     window_boxes_np,
@@ -264,11 +298,29 @@ def estimate_real_world_scale(
             )
             facade_height_px, facade_width_px = mask_extent(facade_mask)
             geo_width_m = geospatial_reference.get("facade_width_m")
-            geo_height_m = geospatial_reference.get("height_m") or scale_estimate["height_m"]
+            source_geo_height_m = geospatial_reference.get("height_m")
+            aspect_height_m, aspect_height_details = (
+                _height_from_geospatial_width_and_facade_aspect(
+                    facade_mask,
+                    float(geo_width_m or 0),
+                )
+            )
+            geo_height_m = source_geo_height_m or aspect_height_m or scale_estimate["height_m"]
             if geo_width_m and geo_height_m:
                 pixels_per_meter_y = facade_height_px / geo_height_m if geo_height_m else 0
                 pixels_per_meter_x = facade_width_px / geo_width_m if geo_width_m else 0
-                geo_confidence = 0.88 if geospatial_reference.get("height_m") else 0.78
+                if source_geo_height_m:
+                    geo_confidence = 0.88
+                    height_method = "geospatial-source-height"
+                    height_source = geospatial_reference.get("height_source")
+                elif aspect_height_m:
+                    geo_confidence = 0.82
+                    height_method = "geospatial-width-facade-pixel-aspect"
+                    height_source = "facade-aspect-from-geospatial-width"
+                else:
+                    geo_confidence = 0.78
+                    height_method = "floor-count-fallback"
+                    height_source = scale_estimate["floor_height_source"]
                 validation = validate_scale_estimate(scale_estimate, geo_width_m, geo_height_m)
                 validation.update(
                     {
@@ -280,6 +332,11 @@ def estimate_real_world_scale(
                         "image_estimate_height_m": scale_estimate["height_m"],
                         "image_estimate_width_m": scale_estimate["width_m"],
                         "image_estimate_area_m2": scale_estimate["total_facade_area_m2"],
+                        "height_estimate_source": height_source,
+                        "height_estimate_method": height_method,
+                        "aspect_height_estimate_m": aspect_height_m,
+                        "floor_count_height_estimate_m": scale_estimate["height_m"],
+                        "height_estimate_details": aspect_height_details,
                         "geospatial_reference": geospatial_reference,
                     }
                 )
@@ -293,8 +350,16 @@ def estimate_real_world_scale(
                     "total_facade_area_m2": geo_height_m * geo_width_m,
                     "scale_source": "geospatial",
                     "scale_confidence": geo_confidence,
-                    "scale_method": "geospatial-footprint-calibrated-image-scale",
+                    "scale_method": (
+                        "geospatial-footprint-calibrated-image-scale"
+                        if source_geo_height_m
+                        else "geospatial-width-aspect-calibrated-image-scale"
+                    ),
                     "facade_width_source": geospatial_width_method,
+                    "height_source": height_source,
+                    "height_method": height_method,
+                    "height_estimate_details": aspect_height_details,
+                    "floor_count_height_estimate_m": scale_estimate["height_m"],
                     "floor_count_source": (
                         geospatial_reference.get("height_source")
                         or scale_estimate["floor_count_source"]

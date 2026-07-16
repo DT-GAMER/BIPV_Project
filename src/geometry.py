@@ -487,13 +487,25 @@ def _validate_rectification(
             quality,
             "insufficient-structural-line-evidence",
         )
-    if improvement is None or improvement < min_improvement_deg:
+    if improvement is None or improvement <= 0:
         return _identity_rectification(
             clean_image,
             keep_boxes,
             pad_frac,
             quality,
             "homography-did-not-improve-axis-alignment",
+        )
+    if (
+        improvement < min_improvement_deg
+        and after_score is not None
+        and after_score > max_axis_deviation_deg * 0.75
+    ):
+        return _identity_rectification(
+            clean_image,
+            keep_boxes,
+            pad_frac,
+            quality,
+            "homography-improvement-too-small-for-off-axis-facade",
         )
     if after_score is None or after_score > max_axis_deviation_deg:
         return _identity_rectification(

@@ -167,12 +167,13 @@ def _refine_geospatial_width_from_image_estimate(
     geospatial_reference: dict,
     image_width_m: float,
 ) -> tuple[dict, str]:
-    """Prefer a footprint edge that agrees with the visible image facade width.
+    """Prefer a footprint edge that agrees with the visible street facade.
 
     Overture/OSM may return a full building block where the longest edge is not
-    the photographed frontage. When no camera/facade bearing is provided, the
-    image-only width estimate is useful as a weak prior for choosing among
-    measured footprint edges.
+    the photographed frontage. When no camera/facade bearing is provided, combine
+    the image-only width estimate with the distance from the input/geocoded point
+    to each edge. The distance term biases the red verification edge toward the
+    side of the building that is closest to the photographed/address side.
     """
 
     edges = geospatial_reference.get("footprint_edges") or []
@@ -182,10 +183,27 @@ def _refine_geospatial_width_from_image_estimate(
             "facade_width_source", "geospatial-footprint-edge"
         )
 
-    selected = min(
-        edges,
-        key=lambda edge: abs(float(edge.get("length_m", 0)) - image_width_m),
-    )
+    distances = [
+        float(edge.get("distance_to_query_m"))
+        for edge in edges
+        if edge.get("distance_to_query_m") is not None
+    ]
+    max_distance = max(distances) if distances else 1.0
+
+    def edge_score(edge):
+        length = float(edge.get("length_m", 0))
+        length_error = abs(length - image_width_m) / max(image_width_m, 1e-6)
+        distance = edge.get("distance_to_query_m")
+        distance_error = (
+            float(distance) / max(max_distance, 1e-6)
+            if distance is not None
+            else 0.5
+        )
+        # Width still matters most, but the selected verification line should
+        # favor the facade side closest to the address/photo point.
+        return length_error + 0.35 * distance_error
+
+    selected = min(edges, key=edge_score)
     selected_width = float(selected.get("length_m", 0))
     if selected_width <= 0:
         return geospatial_reference, geospatial_reference.get(
@@ -194,7 +212,16 @@ def _refine_geospatial_width_from_image_estimate(
 
     current_error = abs(current_width - image_width_m) / max(image_width_m, 1e-6)
     selected_error = abs(selected_width - image_width_m) / max(image_width_m, 1e-6)
-    if selected_error + 0.05 >= current_error:
+    current_score = edge_score(
+        {
+            "length_m": current_width,
+            "distance_to_query_m": (
+                geospatial_reference.get("facade_edge") or {}
+            ).get("distance_to_query_m"),
+        }
+    )
+    selected_score = edge_score(selected)
+    if selected_score + 0.03 >= current_score and selected_error + 0.05 >= current_error:
         return geospatial_reference, geospatial_reference.get(
             "facade_width_source", "geospatial-footprint-edge"
         )
@@ -211,6 +238,9 @@ def _refine_geospatial_width_from_image_estimate(
         "selected_width_m": selected_width,
         "original_relative_error": current_error,
         "selected_relative_error": selected_error,
+        "selection_score": selected_score,
+        "original_selection_score": current_score,
+        "selected_distance_to_query_m": selected.get("distance_to_query_m"),
     }
     return refined, refined["facade_width_source"]
 

@@ -99,6 +99,34 @@ def _edge_measurements(points: list[tuple[float, float]]) -> list[dict]:
     return edges
 
 
+def _annotate_edges_with_query_distance(
+    edges: list[dict],
+    query_lat: float,
+    query_lon: float,
+) -> list[dict]:
+    """Add midpoint distance from the input/geocoded point to each edge."""
+
+    annotated = []
+    for edge in edges:
+        start = edge.get("start") or []
+        end = edge.get("end") or []
+        if len(start) < 2 or len(end) < 2:
+            annotated.append(edge)
+            continue
+        mid_lat = (float(start[0]) + float(end[0])) / 2
+        mid_lon = (float(start[1]) + float(end[1])) / 2
+        updated = dict(edge)
+        updated["midpoint"] = [mid_lat, mid_lon]
+        updated["distance_to_query_m"] = _haversine_m(
+            query_lat,
+            query_lon,
+            mid_lat,
+            mid_lon,
+        )
+        annotated.append(updated)
+    return annotated
+
+
 def _select_facade_edge(edges: list[dict], facade_bearing_deg: float | None = None) -> tuple[dict | None, str]:
     if not edges:
         return None, "no-footprint-edges"
@@ -287,7 +315,11 @@ def fetch_overture_building_reference(
 
     building = candidates[0]
     properties = building["feature"].get("properties") or {}
-    edges = _edge_measurements(building["points"])
+    edges = _annotate_edges_with_query_distance(
+        _edge_measurements(building["points"]),
+        lat,
+        lon,
+    )
     facade_edge, width_method = _select_facade_edge(edges, facade_bearing_deg=facade_bearing_deg)
     if facade_edge is None:
         raise ValueError("Overture building footprint did not contain measurable edges.")
@@ -320,6 +352,7 @@ def fetch_overture_building_reference(
         "height_source": height_source,
         "building_levels": levels,
         "tags": properties,
+        "query_point": [lat, lon],
         "footprint_points": [[lat, lon] for lat, lon in building["points"]],
         "footprint_edges": edges,
         "footprint_edge_count": len(edges),
@@ -381,7 +414,11 @@ def fetch_osm_building_reference(
         raise ValueError(f"No OSM building footprint found within {radius_m:.0f} m.")
 
     building = candidates[0]
-    edges = _edge_measurements(building["points"])
+    edges = _annotate_edges_with_query_distance(
+        _edge_measurements(building["points"]),
+        lat,
+        lon,
+    )
     facade_edge, width_method = _select_facade_edge(edges, facade_bearing_deg=facade_bearing_deg)
     if facade_edge is None:
         raise ValueError("OSM building footprint did not contain measurable edges.")
@@ -409,6 +446,7 @@ def fetch_osm_building_reference(
         "height_source": height_source,
         "building_levels": levels,
         "tags": tags,
+        "query_point": [lat, lon],
         "footprint_points": [[lat, lon] for lat, lon in building["points"]],
         "footprint_edges": edges,
         "footprint_edge_count": len(edges),

@@ -109,6 +109,10 @@ class AnalysisConfig:
     google_maps_api_key: str | None = None
     geospatial_lookup_radius_m: float = 60.0
     facade_bearing_deg: float | None = None
+    facade_start_latitude: float | None = None
+    facade_start_longitude: float | None = None
+    facade_end_latitude: float | None = None
+    facade_end_longitude: float | None = None
 
 
 def automatic_config(

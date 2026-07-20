@@ -178,6 +178,8 @@ def _refine_geospatial_width_from_image_estimate(
 
     edges = geospatial_reference.get("footprint_edges") or []
     current_width = float(geospatial_reference.get("facade_width_m") or 0)
+    if geospatial_reference.get("facade_width_source") == "user-selected-map-line":
+        return geospatial_reference, "user-selected-map-line"
     if not edges or image_width_m <= 0 or current_width <= 0:
         return geospatial_reference, geospatial_reference.get(
             "facade_width_source", "geospatial-footprint-edge"

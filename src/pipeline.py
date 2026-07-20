@@ -27,7 +27,7 @@ from .geometry import (
     rectify_facade,
 )
 from .geocoding import resolve_coordinates
-from .geospatial import fetch_geospatial_building_reference
+from .geospatial import facade_line_reference_from_points, fetch_geospatial_building_reference
 from .house_mode import apply_house_mode_postprocessing
 from .inpainting import (
     build_obstacle_box_mask,
@@ -714,6 +714,15 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
     if config.use_geospatial_scaling:
         print("Stage 8/8 - Geospatial lookup and usable BIPV area estimation")
         coordinates = None
+        has_clicked_facade_line = all(
+            value is not None
+            for value in (
+                config.facade_start_latitude,
+                config.facade_start_longitude,
+                config.facade_end_latitude,
+                config.facade_end_longitude,
+            )
+        )
         try:
             coordinates = resolve_coordinates(
                 address=config.address,
@@ -732,20 +741,49 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
                 facade_bearing_deg=config.facade_bearing_deg,
                 default_floor_height_m=config.floor_height_m,
             )
+            if has_clicked_facade_line:
+                geospatial_reference = facade_line_reference_from_points(
+                    config.facade_start_latitude,
+                    config.facade_start_longitude,
+                    config.facade_end_latitude,
+                    config.facade_end_longitude,
+                    base_reference=geospatial_reference,
+                    query_lat=coordinates["lat"],
+                    query_lon=coordinates["lon"],
+                )
             stages["geospatial_scaling"] = {
                 "enabled": True,
                 "status": "used",
                 "coordinates": coordinates,
                 "reference": geospatial_reference,
+                "clicked_facade_line_used": has_clicked_facade_line,
             }
         except Exception as exc:
-            stages["geospatial_scaling"] = {
-                "enabled": True,
-                "status": "fallback-to-image-scale",
-                "reason": f"{type(exc).__name__}: {exc}",
-                "coordinates": coordinates,
-            }
-            geospatial_reference = None
+            if has_clicked_facade_line:
+                geospatial_reference = facade_line_reference_from_points(
+                    config.facade_start_latitude,
+                    config.facade_start_longitude,
+                    config.facade_end_latitude,
+                    config.facade_end_longitude,
+                    query_lat=(coordinates or {}).get("lat"),
+                    query_lon=(coordinates or {}).get("lon"),
+                )
+                stages["geospatial_scaling"] = {
+                    "enabled": True,
+                    "status": "used-clicked-line-only",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "coordinates": coordinates,
+                    "reference": geospatial_reference,
+                    "clicked_facade_line_used": True,
+                }
+            else:
+                stages["geospatial_scaling"] = {
+                    "enabled": True,
+                    "status": "fallback-to-image-scale",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "coordinates": coordinates,
+                }
+                geospatial_reference = None
 
     if not config.use_geospatial_scaling:
         print("Stage 8/8 - Usable BIPV area estimation")
@@ -773,7 +811,8 @@ def run_bipv_analysis(config: AnalysisConfig | None = None, models=None, **kwarg
         "validation": validation,
     }
     if (
-        stages.get("geospatial_scaling", {}).get("status") == "used"
+        stages.get("geospatial_scaling", {}).get("status")
+        in {"used", "used-clicked-line-only"}
         and dimensions.get("geospatial_reference") is not None
     ):
         stages["geospatial_scaling"]["reference"] = dimensions["geospatial_reference"]

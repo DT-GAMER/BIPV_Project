@@ -492,6 +492,73 @@ def fetch_geospatial_building_reference(
     raise ValueError("No geospatial building footprint found. " + " | ".join(errors))
 
 
+def facade_line_reference_from_points(
+    start_lat: float,
+    start_lon: float,
+    end_lat: float,
+    end_lon: float,
+    *,
+    base_reference: dict | None = None,
+    query_lat: float | None = None,
+    query_lon: float | None = None,
+) -> dict:
+    """Create or override a geospatial reference from a clicked facade line.
+
+    The user identifies the exact facade edge on a map by selecting two
+    endpoints. The system then measures the geodesic distance between those
+    coordinates and uses that as the facade width.
+    """
+
+    length_m = _haversine_m(start_lat, start_lon, end_lat, end_lon)
+    bearing_deg = _bearing_deg(start_lat, start_lon, end_lat, end_lon)
+    midpoint = [(start_lat + end_lat) / 2, (start_lon + end_lon) / 2]
+    query_distance = None
+    if query_lat is not None and query_lon is not None:
+        query_distance = _haversine_m(query_lat, query_lon, midpoint[0], midpoint[1])
+
+    facade_edge = {
+        "index": "user-selected",
+        "length_m": length_m,
+        "bearing_deg": bearing_deg,
+        "start": [float(start_lat), float(start_lon)],
+        "end": [float(end_lat), float(end_lon)],
+        "midpoint": midpoint,
+        "distance_to_query_m": query_distance,
+    }
+
+    reference = dict(base_reference or {})
+    reference.update(
+        {
+            "source": (
+                f"{base_reference.get('source')}-with-clicked-facade-line"
+                if base_reference and base_reference.get("source")
+                else "user-selected-map-line"
+            ),
+            "facade_width_m": length_m,
+            "facade_width_source": "user-selected-map-line",
+            "facade_edge": facade_edge,
+            "height_m": reference.get("height_m"),
+            "height_source": reference.get("height_source"),
+            "building_levels": reference.get("building_levels"),
+            "clicked_facade_line": {
+                "start": [float(start_lat), float(start_lon)],
+                "end": [float(end_lat), float(end_lon)],
+                "width_m": length_m,
+                "bearing_deg": bearing_deg,
+            },
+        }
+    )
+    if "footprint_edges" not in reference:
+        reference["footprint_edges"] = [facade_edge]
+    if "footprint_points" not in reference:
+        reference["footprint_points"] = []
+    if "tags" not in reference:
+        reference["tags"] = {}
+    if query_lat is not None and query_lon is not None:
+        reference["query_point"] = [float(query_lat), float(query_lon)]
+    return reference
+
+
 def geospatial_reference_geojson(
     reference: dict,
     *,

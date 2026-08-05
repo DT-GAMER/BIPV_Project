@@ -1,0 +1,529 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Development Process and Geospatial Scaling Methodology</title>
+<style>
+body { font-family: Arial, sans-serif; line-height: 1.45; max-width: 900px; margin: 40px auto; color: #1f2933; }
+h1, h2, h3, h4 { color: #12385f; }
+h1 { font-size: 28px; }
+h2 { margin-top: 28px; font-size: 22px; border-bottom: 1px solid #d6dde5; padding-bottom: 4px; }
+h3 { font-size: 18px; margin-top: 22px; }
+p, li { font-size: 11.5pt; }
+pre { background: #f4f6f8; border: 1px solid #d8dee6; padding: 10px; white-space: pre-wrap; }
+code { font-family: Consolas, monospace; }
+blockquote { border-left: 4px solid #9eb6ce; margin-left: 0; padding-left: 12px; color: #334e68; }
+</style>
+</head>
+<body>
+<h1>Development Process and Geospatial Scaling Methodology</h1>
+
+<h2>Project Title</h2>
+
+<p>**An image-based pipeline for BIPV facade area estimation, converting street-level facade images into PVsyst-ready data.**</p>
+
+<p>This project develops an image-based workflow for estimating usable building-integrated photovoltaic (BIPV) facade area from ordinary street-level building images. The system combines computer vision, image reconstruction, facade rectification, semantic facade parsing, geocoding, open geospatial building footprints, and metric area conversion. The final outputs are engineering-ready values and files, including usable facade area, facade element segmentation, PV capacity estimates, JSON export, and Excel export for PVsyst-style analysis.</p>
+
+<h2>Why The Pipeline Was Developed</h2>
+
+<p>The original problem was that manual facade measurement is slow, inconsistent, and difficult to scale across many buildings. A user should ideally upload a building image and, where available, provide the building address or coordinate. The system then performs the major analysis stages automatically:</p>
+
+<ol>
+<li>Identify the building facade in the image.</li>
+<li>Detect foreground obstacles such as vehicles, trees, poles, fences, shrubs, and signs.</li>
+<li>Remove or mask obstacles so they do not corrupt facade segmentation.</li>
+<li>Rectify the facade while preserving the original image size.</li>
+<li>Segment facade elements such as wall, windows, doors, balconies, and roof edges.</li>
+<li>Convert image pixels into real-world metres.</li>
+<li>Calculate usable BIPV facade area.</li>
+<li>Estimate panel count, capacity, and annual energy.</li>
+<li>Export JSON and Excel outputs.</li>
+</ol>
+
+<p>The key development challenge was metric scaling. A photo alone does not contain true physical dimensions unless it is calibrated. The current solution uses three scaling routes:</p>
+
+<ol>
+<li>**Geospatial scaling** using Google Geocoding plus Overture Maps or OSM building footprints.</li>
+<li>**Clicked facade-line scaling** where the user draws the exact facade width on a map.</li>
+<li>**Image-only fallback scaling** using detected floor count and facade aspect when no geospatial reference is available.</li>
+</ol>
+
+<h2>High-Level Pipeline</h2>
+
+<p>The final user-facing workflow is:</p>
+
+<pre><code>Street-level facade image
+        ↓
+Image acquisition and preprocessing
+        ↓
+Grounding DINO obstacle/facade detection
+        ↓
+SAM obstacle segmentation
+        ↓
+Obstacle masking and inpainting
+        ↓
+Facade rectification and alignment
+        ↓
+Facade element segmentation
+        ↓
+Geospatial / clicked-line / image-only scaling
+        ↓
+Usable BIPV area estimation
+        ↓
+Panel capacity and energy estimate
+        ↓
+JSON and Excel export</code></pre>
+
+<h2>Core Code Modules</h2>
+
+<p>The main modules are:</p>
+
+<ul>
+<li>`src/pipeline.py`: Orchestrates the full end-to-end analysis.</li>
+<li>`src/config.py`: Stores all configuration options used by the pipeline.</li>
+<li>`src/geocoding.py`: Resolves a user address to latitude/longitude using Google Geocoding.</li>
+<li>`src/geospatial.py`: Fetches Overture/OSM building footprints, measures edges, creates verification maps, and supports clicked facade-line measurement.</li>
+<li>`src/colab_facade_line.py`: Creates a Colab map widget so the user can draw the exact facade edge.</li>
+<li>`src/scaling.py`: Converts image facade pixels into metric width, height, area, and pixel-to-metre scale.</li>
+<li>`src/area.py`: Converts facade masks into usable BIPV area and panel capacity.</li>
+<li>`src/geometry.py`: Performs facade rectification and validates whether the rectification improves alignment.</li>
+<li>`src/segmentation.py`: Produces facade, window/opening, door, balcony, and roof masks.</li>
+<li>`src/export.py`: Saves JSON and Excel engineering outputs.</li>
+</ul>
+
+<h2>Role Of Google Geocoding API</h2>
+
+<p>Google Geocoding is used only to locate the building. It does **not** directly calculate facade width, height, or area.</p>
+
+<p>Input:</p>
+
+<pre><code>114 Dundee St, Fountainbridge, Edinburgh EH11 1AB, United Kingdom</code></pre>
+
+<p>Output:</p>
+
+<pre><code>latitude
+longitude
+formatted address
+Google place ID
+source = google-geocoding</code></pre>
+
+<p>The code path is:</p>
+
+<pre><code>src/geocoding.py
+resolve_coordinates()
+    → geocode_google()</code></pre>
+
+<p>If the user provides exact latitude and longitude, the system skips Google Geocoding and uses those coordinates directly.</p>
+
+<h2>Role Of Overture Maps</h2>
+
+<p>Overture Maps provides open building footprint data. A footprint is the top-down polygon shape of the building. It is not a facade image; it is a plan-view geometry.</p>
+
+<p>The system queries Overture around the geocoded coordinate and retrieves nearby building polygons. For each building polygon, the system extracts:</p>
+
+<ul>
+<li>Overture building ID.</li>
+<li>Building footprint points.</li>
+<li>Footprint edges.</li>
+<li>Edge lengths in metres.</li>
+<li>Edge bearings.</li>
+<li>Footprint centroid.</li>
+<li>Distance from the input address/coordinate point.</li>
+<li>Available tags such as building class, subtype, height, or levels if present.</li>
+</ul>
+
+<p>The code path is:</p>
+
+<pre><code>src/geospatial.py
+fetch_geospatial_building_reference()
+    → fetch_overture_building_reference()</code></pre>
+
+<p>Overture is tried first. If Overture fails or no building is found, the system falls back to OSM/Overpass:</p>
+
+<pre><code>fetch_geospatial_building_reference()
+    → fetch_osm_building_reference()</code></pre>
+
+<h2>How The Building ID Is Gotten</h2>
+
+<p>When Overture returns a building feature, the building ID is read from the Overture feature properties:</p>
+
+<pre><code>properties.get(&quot;id&quot;) or feature.get(&quot;id&quot;)</code></pre>
+
+<p>The output appears as:</p>
+
+<pre><code>overture_id: 51760847-5793-4486-aaf9-76db99c95025
+source: overture-maps</code></pre>
+
+<p>If OSM/Overpass is used instead, the output contains:</p>
+
+<pre><code>osm_id
+osm_type
+source: osm-overpass</code></pre>
+
+<p>This ID helps verify which geospatial building polygon was selected. It does not come from the image; it comes from the geospatial dataset.</p>
+
+<h2>How The Correct Building Is Selected</h2>
+
+<p>After the address is geocoded, the system queries nearby building footprints within a search radius, usually 60 metres.</p>
+
+<p>For each candidate building:</p>
+
+<ol>
+<li>The building footprint polygon is extracted.</li>
+<li>The polygon centroid is calculated.</li>
+<li>The distance from the geocoded point to the centroid is calculated.</li>
+<li>Candidates are sorted by distance.</li>
+<li>The nearest footprint is selected.</li>
+</ol>
+
+<p>This is why visual verification is important. Sometimes the address point is on the road or at a doorway, and a large building block may be selected instead of the exact visible facade. The project therefore includes a verification map.</p>
+
+<h2>How The Width Is Gotten</h2>
+
+<p>There are three width modes.</p>
+
+<h3>Mode 1: Clicked Facade-Line Width</h3>
+
+<p>This is the most defensible mode for conference/paper presentation because the user explicitly selects the exact photographed facade edge on the map.</p>
+
+<p>In Colab, the user opens the facade-line selector and draws a red line along the facade frontage. The system reads the two endpoint coordinates:</p>
+
+<pre><code>start_lat, start_lon
+end_lat, end_lon</code></pre>
+
+<p>Then it calculates the real-world distance between those points using the haversine formula:</p>
+
+<pre><code>a = sin²(Δφ / 2) + cos(φ1) cos(φ2) sin²(Δλ / 2)
+d = 2R atan2(√a, √(1 − a))</code></pre>
+
+<p>Where:</p>
+
+<ul>
+<li>`φ1`, `φ2` are latitudes in radians.</li>
+<li>`Δφ` is the latitude difference.</li>
+<li>`Δλ` is the longitude difference.</li>
+<li>`R` is Earth radius, 6,371,008.8 m.</li>
+<li>`d` is facade width in metres.</li>
+</ul>
+
+<p>The output then records:</p>
+
+<pre><code>facade_width_source: user-selected-map-line
+facade_width_m: measured line distance
+clicked_facade_line:
+    start
+    end
+    width_m
+    bearing_deg</code></pre>
+
+<p>This mode avoids relying on automatic edge selection when the building footprint is complex.</p>
+
+<h3>Mode 2: Automatic Overture/OSM Edge Width</h3>
+
+<p>If the user does not draw a line, the system measures every edge of the selected footprint polygon.</p>
+
+<p>Each footprint edge is measured using the same haversine distance formula. The first-pass rule is:</p>
+
+<ul>
+<li>If a facade bearing is supplied, choose the edge whose bearing best matches it.</li>
+<li>Otherwise, choose a candidate edge using edge length, image-estimated width, and proximity to the query point.</li>
+</ul>
+
+<p>The output may show:</p>
+
+<pre><code>facade_width_source: overture-maps-image-width-matched-edge</code></pre>
+
+<p>This means the system did not simply choose the longest edge. It compared the measured footprint edges against the image-implied facade width and selected the edge that better matches the visible facade.</p>
+
+<h3>Mode 3: Image-Only Width Fallback</h3>
+
+<p>If no address, coordinate, clicked line, Overture, or OSM footprint is available, the system falls back to image-only scaling.</p>
+
+<p>In this mode:</p>
+
+<pre><code>height_m = detected_floors × assumed_floor_height_m
+pixels_per_meter = facade_height_px / height_m
+width_m = facade_width_px / pixels_per_meter</code></pre>
+
+<p>This is useful when no geospatial data exists, but it is less defensible because it depends on floor detection and assumed floor height.</p>
+
+<h2>How The Height Is Gotten</h2>
+
+<p>Height is calculated using a priority order.</p>
+
+<h3>Priority 1: Geospatial Height Tag</h3>
+
+<p>If Overture or OSM provides a building height tag, the system uses it directly:</p>
+
+<pre><code>height_m = geospatial_reference[&quot;height_m&quot;]
+height_method = geospatial-source-height</code></pre>
+
+<p>If the dataset provides building levels instead of height:</p>
+
+<pre><code>height_m = building_levels × default_floor_height_m</code></pre>
+
+<p>However, many Overture/OSM buildings do not contain height or level tags. In the example output, this is why:</p>
+
+<pre><code>height_m: None
+height_source: None
+building_levels: None</code></pre>
+
+<p>appears inside `geospatial_reference`.</p>
+
+<h3>Priority 2: Geospatial Width Plus Facade Pixel Aspect</h3>
+
+<p>When geospatial height is missing, the current improved method does **not** rely mainly on floor count. Instead, it uses the measured geospatial width and the visible facade aspect ratio from the image mask.</p>
+
+<p>The formula is:</p>
+
+<pre><code>facade_aspect = facade_height_px / facade_width_px
+height_m = measured_width_m × facade_aspect</code></pre>
+
+<p>Example from the output:</p>
+
+<pre><code>facade_height_px = 506
+facade_width_px = 932
+facade_aspect_h_over_w = 0.542918
+reference_width_m = 29.7854
+height_m = 29.7854 × 0.542918 = 16.1711 m</code></pre>
+
+<p>The output records:</p>
+
+<pre><code>height_source: facade-aspect-from-geospatial-width
+height_method: geospatial-width-facade-pixel-aspect</code></pre>
+
+<p>This is better than pure floor counting because it uses an externally measured width and the actual visible facade geometry.</p>
+
+<h3>Priority 3: Floor Count Fallback</h3>
+
+<p>If no geospatial width is available, the system estimates height from floor count:</p>
+
+<pre><code>height_m = num_floors × floor_height_m</code></pre>
+
+<p>The floor count is estimated from window/opening rows and facade extent. The output keeps this value even when geospatial scaling is used:</p>
+
+<pre><code>floor_count_height_estimate_m</code></pre>
+
+<p>This is now mainly a fallback and comparison value.</p>
+
+<h2>How Pixel-To-Metre Conversion Works</h2>
+
+<p>The facade segmentation produces a binary facade mask. In a binary mask:</p>
+
+<ul>
+<li>`True` or white pixels represent facade surface.</li>
+<li>`False` or black pixels represent non-facade/background.</li>
+</ul>
+
+<p>The system finds the facade mask bounding extent:</p>
+
+<pre><code>facade_width_px
+facade_height_px</code></pre>
+
+<p>Then:</p>
+
+<pre><code>pixels_per_meter_x = facade_width_px / width_m
+pixels_per_meter_y = facade_height_px / height_m</code></pre>
+
+<p>When height is derived from geospatial width and image aspect, both scale values become consistent:</p>
+
+<pre><code>pixels_per_meter_x ≈ pixels_per_meter_y</code></pre>
+
+<p>For area conversion:</p>
+
+<pre><code>total_facade_area_m2 = width_m × height_m
+facade_area_px = count of True pixels in facade_mask
+px_to_m2 = total_facade_area_m2 / facade_area_px</code></pre>
+
+<p>So each facade mask pixel receives a real-world area value.</p>
+
+<h2>How Usable BIPV Area Is Calculated</h2>
+
+<p>The usable area starts from the facade wall mask:</p>
+
+<pre><code>usable_mask = facade_mask</code></pre>
+
+<p>Then the pipeline removes unusable facade elements:</p>
+
+<pre><code>usable_mask = facade_mask
+              − windows
+              − doors
+              − balconies
+              − roof/non-wall exclusions</code></pre>
+
+<p>In code, windows, doors, and balconies are slightly dilated before subtraction so that a small mounting clearance around openings is also excluded.</p>
+
+<p>The usable area is then:</p>
+
+<pre><code>usable_area_m2 = usable_pixel_count × px_to_m2</code></pre>
+
+<p>Where:</p>
+
+<pre><code>usable_pixel_count = count of True pixels in usable_mask</code></pre>
+
+<h2>How Panel Capacity Is Calculated</h2>
+
+<p>The current engineering assumptions are:</p>
+
+<pre><code>panel_area_m2 = 1.7
+watts_per_panel = 350
+panel_efficiency = 0.20</code></pre>
+
+<p>Panel count:</p>
+
+<pre><code>num_panels = floor(usable_area_m2 / panel_area_m2)</code></pre>
+
+<p>Total capacity:</p>
+
+<pre><code>total_capacity_kw = num_panels × watts_per_panel / 1000</code></pre>
+
+<p>For example:</p>
+
+<pre><code>usable_area_m2 = 358.62
+num_panels = floor(358.62 / 1.7) = 210
+total_capacity_kw = 210 × 350 / 1000 = 73.5 kW</code></pre>
+
+<h2>How Annual Energy Is Calculated</h2>
+
+<p>The simplified energy estimate uses a specific yield:</p>
+
+<pre><code>specific_yield_kwh_per_kwp = 950</code></pre>
+
+<p>Then:</p>
+
+<pre><code>annual_kwh = total_capacity_kw × specific_yield_kwh_per_kwp × (1 − shading_loss_fraction)</code></pre>
+
+<p>Shadow analysis is currently disabled in the focused pipeline, so:</p>
+
+<pre><code>shading_loss_fraction = 0</code></pre>
+
+<p>Therefore:</p>
+
+<pre><code>annual_kwh = total_capacity_kw × 950</code></pre>
+
+<p>Example:</p>
+
+<pre><code>annual_kwh = 73.5 × 950 = 69,825 kWh</code></pre>
+
+<h2>What The Geospatial Verification Map Shows</h2>
+
+<p>The generated HTML map is used to prove what building and facade edge were used.</p>
+
+<p>It displays:</p>
+
+<ul>
+<li>Building footprint polygon.</li>
+<li>Red selected facade edge.</li>
+<li>Green footprint centroid.</li>
+<li>Orange input address/coordinate point.</li>
+<li>Building source, ID, width, edge source, and distance from the input point.</li>
+</ul>
+
+<p>Important fields:</p>
+
+<pre><code>source
+overture_id or osm_id
+facade_width_m
+facade_width_source
+distance_to_query_m
+footprint_edges
+clicked_facade_line</code></pre>
+
+<p>If the red line is on the wrong side of the building, the width may be wrong for the photographed facade. In that case, the clicked facade-line method should be used.</p>
+
+<h2>Recommended User Flow In Colab</h2>
+
+<h3>Case A: User Has Image And Address</h3>
+
+<ol>
+<li>Upload or select the facade image.</li>
+<li>Enter the building address.</li>
+<li>Store the Google Maps API key in Colab Secrets as `GOOGLE_MAPS_API_KEY`.</li>
+<li>Run geocoding to get latitude/longitude.</li>
+<li>Open the map selector.</li>
+<li>Draw a line along the exact photographed facade edge.</li>
+<li>Run the BIPV pipeline.</li>
+<li>Verify that:</li>
+</ol>
+
+<pre><code>scale_source = geospatial
+facade_width_source = user-selected-map-line
+height_method = geospatial-width-facade-pixel-aspect
+clicked_facade_line_used = True</code></pre>
+
+<h3>Case B: User Has Image And Coordinates</h3>
+
+<ol>
+<li>Upload or select the facade image.</li>
+<li>Enter latitude and longitude.</li>
+<li>Skip Google Geocoding.</li>
+<li>Draw or automatically select the facade edge.</li>
+<li>Run the BIPV pipeline.</li>
+</ol>
+
+<h3>Case C: User Has Image Only</h3>
+
+<ol>
+<li>Upload or select the facade image.</li>
+<li>Leave address and coordinates empty.</li>
+<li>The pipeline falls back to automatic image scale estimation.</li>
+<li>Output should be treated as an estimate, not a geospatially validated measurement.</li>
+</ol>
+
+<p>Expected output:</p>
+
+<pre><code>scale_source = automatic-image-scale-estimate
+validation.status = estimated-no-reference</code></pre>
+
+<h2>How To Explain The Method In A Defense</h2>
+
+<p>A clear defense explanation is:</p>
+
+<p>&gt; The image alone provides facade geometry in pixels, but not metric dimensions. Therefore, the system first uses Google Geocoding to convert the building address into coordinates. It then queries Overture Maps or OSM to retrieve the building footprint. The footprint gives real-world plan geometry and edge lengths. For the most reliable case, the exact photographed facade edge is selected on the map, and its length is calculated from the two endpoint coordinates using the haversine distance formula. This gives the facade width in metres. Since most open geospatial data does not include building height, the system estimates height from the visible facade aspect ratio in the segmented image: height equals measured width multiplied by facade pixel height divided by facade pixel width. The resulting width and height give total facade area, and the segmentation mask is used to count which pixels are usable after excluding windows, doors, balconies, and roof/non-wall regions. Finally, pixel counts are converted to square metres and used to estimate module count, capacity, and annual energy output.</p>
+
+<h2>Limitations And Assumptions</h2>
+
+<p>The current method is strong, but the following limitations must be stated clearly:</p>
+
+<ol>
+<li>Google Geocoding gives a location point, not a facade dimension.</li>
+<li>Overture/OSM footprints are plan-view building outlines, not street-view facade models.</li>
+<li>Some Overture footprints represent a whole building block, so the automatic edge may not always be the photographed facade.</li>
+<li>The clicked facade-line method is the most reliable width calibration currently available.</li>
+<li>Height is only directly measured if Overture/OSM provides height or building levels.</li>
+<li>When height metadata is missing, height is estimated from measured width and image facade aspect ratio.</li>
+<li>This height estimate assumes the detected facade mask corresponds to the same facade edge measured on the map.</li>
+<li>Severe perspective distortion, partial facade visibility, or poor facade segmentation can affect height and area.</li>
+<li>The image-only fallback should be labelled as an estimate because it depends on floor count and assumed floor height.</li>
+</ol>
+
+<h2>Final Current Method Summary</h2>
+
+<p>The current best method is:</p>
+
+<pre><code>Image + address/coordinate + clicked facade line
+        ↓
+Google Geocoding locates the building
+        ↓
+Overture Maps verifies footprint and building ID
+        ↓
+Clicked map line gives facade width in metres
+        ↓
+Facade mask gives pixel width and height
+        ↓
+height_m = width_m × (facade_height_px / facade_width_px)
+        ↓
+total_facade_area_m2 = width_m × height_m
+        ↓
+px_to_m2 = total_facade_area_m2 / facade_mask_pixel_count
+        ↓
+usable_area_m2 = usable_mask_pixel_count × px_to_m2
+        ↓
+panel_count = floor(usable_area_m2 / 1.7)
+        ↓
+capacity_kw = panel_count × 350 / 1000
+        ↓
+annual_kwh = capacity_kw × 950</code></pre>
+
+<p>This gives a transparent, verifiable, image-based BIPV facade estimation pipeline that can be explained, audited, and improved further with better facade segmentation or richer 3D building datasets.</p>
+</body></html>

@@ -19,13 +19,25 @@ def run_batch_analysis(
     longitudes=None,
     google_maps_api_key: str | None = None,
     geospatial_lookup_radius_m: float | None = None,
+    facade_bearing_deg: float | None = None,
+    clicked_facade_line_configs=None,
 ):
-    """Run BIPV analysis for multiple images while reusing loaded models."""
+    """Run BIPV analysis for multiple images while reusing loaded models.
+
+    Address and coordinate inputs are optional per image. Images with a valid
+    address or coordinate pair use geospatial scaling; images without location
+    inputs automatically fall back to image-only scale estimation.
+    """
 
     image_paths = list(image_paths)
     addresses = list(addresses) if addresses is not None else None
     latitudes = list(latitudes) if latitudes is not None else None
     longitudes = list(longitudes) if longitudes is not None else None
+    clicked_facade_line_configs = (
+        list(clicked_facade_line_configs)
+        if clicked_facade_line_configs is not None
+        else None
+    )
 
     if len(image_paths) == 0:
         raise ValueError("No image paths were provided for batch analysis.")
@@ -38,6 +50,7 @@ def run_batch_analysis(
         ("addresses", addresses),
         ("latitudes", latitudes),
         ("longitudes", longitudes),
+        ("clicked_facade_line_configs", clicked_facade_line_configs),
     ):
         if values is not None and len(values) != len(image_paths):
             raise ValueError(
@@ -72,30 +85,42 @@ def run_batch_analysis(
             )
         config_values = dict(config.__dict__)
         if addresses is not None:
+            address = addresses[index - 1]
             config_values.update(
                 {
-                    "use_geospatial_scaling": True,
-                    "address": addresses[index - 1],
+                    "use_geospatial_scaling": bool(address),
+                    "address": address,
                     "latitude": None,
                     "longitude": None,
                 }
             )
         if latitudes is not None and longitudes is not None:
+            latitude = latitudes[index - 1]
+            longitude = longitudes[index - 1]
+            has_coordinates = latitude is not None and longitude is not None
             config_values.update(
                 {
-                    "use_geospatial_scaling": True,
+                    "use_geospatial_scaling": has_coordinates,
                     "address": None,
-                    "latitude": latitudes[index - 1],
-                    "longitude": longitudes[index - 1],
+                    "latitude": latitude,
+                    "longitude": longitude,
                 }
             )
         if google_maps_api_key is not None:
             config_values["google_maps_api_key"] = google_maps_api_key
         if geospatial_lookup_radius_m is not None:
             config_values["geospatial_lookup_radius_m"] = geospatial_lookup_radius_m
+        if facade_bearing_deg is not None:
+            config_values["facade_bearing_deg"] = facade_bearing_deg
+        if clicked_facade_line_configs is not None:
+            line_config = clicked_facade_line_configs[index - 1] or {}
+            config_values.update(line_config)
+            if line_config:
+                config_values["use_geospatial_scaling"] = True
         config = AnalysisConfig(**config_values)
 
         print(f"\n=== Batch image {index}/{len(image_paths)}: {image_path} ===")
+        print("Geospatial scaling:", config.use_geospatial_scaling)
         results.append(run_bipv_analysis(config, models=models))
 
     return results

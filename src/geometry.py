@@ -372,7 +372,7 @@ def _structural_alignment_metrics(image, region_mask=None):
     horizontal = 0
     vertical = 0
     if lines is not None:
-        for line in lines[:, 0]:
+        for line in np.asarray(lines).reshape(-1, 4):
             x1, y1, x2, y2 = [int(value) for value in line]
             dx, dy = x2 - x1, y2 - y1
             length = float(np.hypot(dx, dy))

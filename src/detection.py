@@ -9,6 +9,8 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 
+from .utils import decode_box
+
 
 ALL_CLASSES = [
     "window",
@@ -124,6 +126,49 @@ def detect_obstacles_and_architecture(
 
 
 def annotate(image_rgb, boxes, logits, phrases):
-    from groundingdino.util.inference import annotate as dino_annotate
+    """Draw detections without relying on GroundingDINO/supervision annotation APIs."""
 
-    return dino_annotate(image_source=image_rgb, boxes=boxes, logits=logits, phrases=phrases)
+    import cv2
+
+    annotated = image_rgb.copy()
+    height, width = image_rgb.shape[:2]
+    boxes_np = boxes.detach().cpu().numpy() if hasattr(boxes, "detach") else np.asarray(boxes)
+    logits_np = logits.detach().cpu().numpy() if hasattr(logits, "detach") else np.asarray(logits)
+
+    for box, logit, phrase in zip(boxes_np, logits_np, phrases):
+        x1, y1, x2, y2 = decode_box(np.asarray(box), height, width)
+        x1 = int(np.clip(round(x1), 0, width - 1))
+        y1 = int(np.clip(round(y1), 0, height - 1))
+        x2 = int(np.clip(round(x2), 0, width - 1))
+        y2 = int(np.clip(round(y2), 0, height - 1))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        label = f"{phrase} {float(logit):.2f}"
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), (34, 197, 94), 2)
+        label_y = max(0, y1 - 8)
+        (label_w, label_h), baseline = cv2.getTextSize(
+            label,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            1,
+        )
+        cv2.rectangle(
+            annotated,
+            (x1, max(0, label_y - label_h - baseline)),
+            (min(width - 1, x1 + label_w + 6), min(height - 1, label_y + baseline)),
+            (34, 197, 94),
+            thickness=-1,
+        )
+        cv2.putText(
+            annotated,
+            label,
+            (x1 + 3, label_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    return annotated
